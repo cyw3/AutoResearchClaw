@@ -573,6 +573,106 @@ def _execute_experiment_run(
     )
 
 
+def _agent_prompt_timeout_reason(exc: BaseException) -> str | None:
+    """Map an agent timeout to a Stage 13 pause reason, or None."""
+    text = str(exc)
+    if "ACP prompt timed out after" in text:
+        return "acp_prompt_timeout"
+    if "Cursor prompt timed out after" in text:
+        return "cursor_prompt_timeout"
+    return None
+
+
+def _synthetic_harness_main(metric_key: str, baseline_metric: float) -> str:
+    """Return a main.py that prints one harness metric when executed as a script."""
+    key = str(metric_key)
+    rendered = repr(float(baseline_metric))
+    return (
+        "# Synthetic entrypoint — metrics come from stage-12 harness runs, "
+        "not from this sandbox.\n"
+        "def main() -> None:\n"
+        f"    print({key!r} + \": \" + str({rendered}))\n"
+        "\n"
+        "if __name__ == \"__main__\":\n"
+        "    main()\n"
+    )
+
+
+def _finite_float(value: Any) -> float | None:
+    """Finite float, or None for missing, non-numeric, NaN, and Inf values."""
+    try:
+        if value is None:
+            return None
+        number = float(value)
+    except (TypeError, ValueError):
+        return None
+    if math.isnan(number) or math.isinf(number):
+        return None
+    return number
+
+
+def _find_metric_value(metrics: dict[str, object], key: str) -> float | None:
+    """Resolve ``key`` the same way Stage 13 scores a run.
+
+    Exact match first, then aggregate names such as ``f1_mean`` or ``cond/f1``.
+    """
+    val = _finite_float(metrics.get(key))
+    if val is not None:
+        return val
+    candidates: list[tuple[str, float]] = []
+    for name, raw in metrics.items():
+        number = _finite_float(raw)
+        if number is None:
+            continue
+        if name == key or name.endswith(f"/{key}"):
+            return number
+        if key in name and ("mean" in name or "avg" in name):
+            candidates.append((name, number))
+        elif name.endswith(f"_{key}") or name.endswith(f"/{key}_mean"):
+            candidates.append((name, number))
+    if candidates:
+        for name, number in candidates:
+            if "mean" in name:
+                return number
+        return candidates[0][1]
+    for name, raw in metrics.items():
+        number = _finite_float(raw)
+        if number is not None and key in name and "/" not in name and "seed" not in name:
+            return number
+    return None
+
+
+def _best_metric_in_runs(
+    runs_dir: Path | None,
+    metric_key: str,
+    *,
+    maximize: bool,
+) -> float | None:
+    """Best finite metric across run JSON files, using Stage 13 key matching."""
+    if runs_dir is None or not runs_dir.is_dir() or not metric_key:
+        return None
+    best: float | None = None
+    for run_file in sorted(runs_dir.glob("*.json"))[:40]:
+        payload = _safe_json_loads(run_file.read_text(encoding="utf-8"), {})
+        if not isinstance(payload, dict):
+            continue
+        metrics = payload.get("metrics")
+        if not isinstance(metrics, dict):
+            metrics = (
+                payload.get("key_metrics")
+                if isinstance(payload.get("key_metrics"), dict)
+                else {}
+            )
+        value = _find_metric_value(metrics, metric_key) if isinstance(metrics, dict) else None
+        if value is None:
+            value = _finite_float(payload.get("primary_metric"))
+        if value is None:
+            continue
+        if best is None or (value > best if maximize else value < best):
+            best = value
+    return best
+
+
 def _execute_iterative_refine(
     stage_dir: Path,
     run_dir: Path,
@@ -585,16 +685,8 @@ def _execute_iterative_refine(
     from researchclaw.experiment.factory import create_sandbox
 
     def _to_float(value: Any) -> float | None:
-        try:
-            if value is None:
-                return None
-            f = float(value)
-            # BUG-EX-01: NaN/Inf block all future improvement detection
-            if math.isnan(f) or math.isinf(f):
-                return None
-            return f
-        except (TypeError, ValueError):
-            return None
+        # BUG-EX-01: NaN/Inf block all future improvement detection.
+        return _finite_float(value)
 
     # Agent-based modes (collider_agent, biology_agent, stat_agent): no Python
     # refinement loop — the agent handled the full pipeline atomically in
@@ -682,6 +774,25 @@ def _execute_iterative_refine(
                 copied = True
                 break
 
+        if not copied:
+            runs_text = _read_prior_artifact(run_dir, "runs/")
+            metric_key = str(config.experiment.metric_key or "")
+            baseline = _best_metric_in_runs(
+                Path(runs_text) if runs_text else None,
+                metric_key,
+                maximize=config.experiment.metric_direction == "maximize",
+            )
+            if baseline is not None and metric_key:
+                code = _synthetic_harness_main(metric_key, baseline)
+                final_dir.mkdir(parents=True, exist_ok=True)
+                (final_dir / "main.py").write_text(code, encoding="utf-8")
+                (stage_dir / "experiment_final.py").write_text(code, encoding="utf-8")
+                logger.info(
+                    "Stage 13: no experiment/ code — placeholder main.py prints %s=%s",
+                    metric_key,
+                    baseline,
+                )
+
         log: dict[str, Any] = {
             "generated": _utcnow_iso(),
             "mode": "simulated",
@@ -692,10 +803,13 @@ def _execute_iterative_refine(
         (stage_dir / "refinement_log.json").write_text(
             json.dumps(log, indent=2), encoding="utf-8"
         )
+        artifacts: tuple[str, ...] = ("refinement_log.json",)
+        if final_dir.is_dir() and any(final_dir.iterdir()):
+            artifacts = ("refinement_log.json", "experiment_final/")
         return StageResult(
             stage=Stage.ITERATIVE_REFINE,
             status=StageStatus.DONE,
-            artifacts=("refinement_log.json",),
+            artifacts=artifacts,
             evidence_refs=(),
         )
 
@@ -746,40 +860,8 @@ def _execute_iterative_refine(
         return candidate > current if maximize else candidate < current
 
     def _find_metric(metrics: dict[str, object], key: str) -> float | None:
-        """R13-4: Find metric value with fuzzy key matching.
-
-        Tries exact match first, then looks for aggregate keys that contain
-        the metric name (e.g. 'primary_metric_mean' when key='primary_metric').
-        """
-        # Exact match
-        val = _to_float(metrics.get(key))
-        if val is not None:
-            return val
-        # Try aggregate/mean keys containing the metric name
-        # Prefer keys ending with the metric name or containing '_mean'
-        candidates: list[tuple[str, float]] = []
-        for mk, mv in metrics.items():
-            fv = _to_float(mv)
-            if fv is None:
-                continue
-            if mk == key or mk.endswith(f"/{key}"):
-                return fv  # Exact match via condition prefix
-            if key in mk and ("mean" in mk or "avg" in mk):
-                candidates.append((mk, fv))
-            elif mk.endswith(f"_{key}") or mk.endswith(f"/{key}_mean"):
-                candidates.append((mk, fv))
-        if candidates:
-            # Take the aggregate mean if available, otherwise first match
-            for ck, cv in candidates:
-                if "mean" in ck:
-                    return cv
-            return candidates[0][1]
-        # Last resort: if there's an "overall" or root-level aggregate
-        for mk, mv in metrics.items():
-            fv = _to_float(mv)
-            if fv is not None and key in mk and "/" not in mk and "seed" not in mk:
-                return fv
-        return None
+        """R13-4: exact key, then aggregates such as ``primary_metric_mean``."""
+        return _find_metric_value(metrics, key)
 
     requested_iterations = int(getattr(config.experiment, "max_iterations", 10) or 10)
     max_iterations = max(1, min(requested_iterations, 10))
@@ -897,6 +979,29 @@ def _execute_iterative_refine(
         if original_code:
             best_files = {"main.py": original_code}
 
+    # Harness-only runs have metrics in runs/*.json and no experiment tree.
+    # Reprint the baseline in main.py so experiment_final/ is non-empty, then
+    # skip the refine loop. Improving this echo script would replace measured
+    # numbers with model-written output.
+    harness_only = False
+    if (
+        not best_files
+        and runs_dir_path is not None
+        and runs_dir_path.is_dir()
+        and baseline_metric is not None
+        and metric_key
+    ):
+        best_files = {
+            "main.py": _synthetic_harness_main(str(metric_key), float(baseline_metric))
+        }
+        harness_only = True
+        logger.info(
+            "Stage 13: no experiment/ code — using harness baseline metric "
+            "for placeholder main.py (%s=%s)",
+            metric_key,
+            baseline_metric,
+        )
+
     # --- Detect if prior experiment timed out ---
     prior_timed_out = False
     prior_time_budget = config.experiment.time_budget_sec
@@ -981,6 +1086,36 @@ def _execute_iterative_refine(
             artifacts=artifacts,
             error=reason,
             decision="resume",
+            evidence_refs=tuple(f"stage-13/{a}" for a in artifacts),
+        )
+
+    if harness_only:
+        logger.info(
+            "Stage 13: harness-only runs — placeholder reprints %s=%s; skipping refine",
+            metric_key,
+            best_metric,
+        )
+        final_dir = stage_dir / "experiment_final"
+        _write_project(final_dir, best_files)
+        if "main.py" in best_files:
+            (stage_dir / "experiment_final.py").write_text(
+                best_files["main.py"], encoding="utf-8"
+            )
+        log.update(
+            {
+                "converged": True,
+                "stop_reason": "harness_metrics_only",
+                "best_metric": best_metric,
+                "best_version": "experiment_final/",
+                "iterations": [],
+            }
+        )
+        _write_refinement_log()
+        artifacts = ("refinement_log.json", "experiment_final/")
+        return StageResult(
+            stage=Stage.ITERATIVE_REFINE,
+            status=StageStatus.DONE,
+            artifacts=artifacts,
             evidence_refs=tuple(f"stage-13/{a}" for a in artifacts),
         )
 
@@ -1141,14 +1276,15 @@ def _execute_iterative_refine(
                 max_tokens=ip.max_tokens or 8192,
             )
         except RuntimeError as exc:
-            if "ACP prompt timed out after" in str(exc):
+            timeout_reason = _agent_prompt_timeout_reason(exc)
+            if timeout_reason is not None:
                 logger.warning(
-                    "Stage 13: ACP prompt timed out during iteration %d; pausing for resume",
+                    "Stage 13: agent prompt timed out during iteration %d; pausing for resume",
                     iteration,
                 )
                 return _pause_refinement(
                     reason=str(exc),
-                    stop_reason="acp_prompt_timeout",
+                    stop_reason=timeout_reason,
                     iteration=iteration,
                 )
             raise
@@ -1211,14 +1347,15 @@ def _execute_iterative_refine(
             try:
                 repair_response = _chat_with_prompt(llm, irp.system, irp.user)
             except RuntimeError as exc:
-                if "ACP prompt timed out after" in str(exc):
+                timeout_reason = _agent_prompt_timeout_reason(exc)
+                if timeout_reason is not None:
                     logger.warning(
-                        "Stage 13: ACP repair prompt timed out during iteration %d; pausing for resume",
+                        "Stage 13: agent repair prompt timed out during iteration %d; pausing for resume",
                         iteration,
                     )
                     return _pause_refinement(
                         reason=str(exc),
-                        stop_reason="acp_prompt_timeout",
+                        stop_reason=timeout_reason,
                         iteration=iteration,
                     )
                 raise
@@ -1336,14 +1473,15 @@ def _execute_iterative_refine(
                 try:
                     repair_resp = _chat_with_prompt(llm, rrp.system, rrp.user)
                 except RuntimeError as exc:
-                    if "ACP prompt timed out after" in str(exc):
+                    timeout_reason = _agent_prompt_timeout_reason(exc)
+                    if timeout_reason is not None:
                         logger.warning(
-                            "Stage 13: ACP runtime-repair prompt timed out during iteration %d; pausing for resume",
+                            "Stage 13: agent runtime-repair prompt timed out during iteration %d; pausing for resume",
                             iteration,
                         )
                         return _pause_refinement(
                             reason=str(exc),
-                            stop_reason="acp_prompt_timeout",
+                            stop_reason=timeout_reason,
                             iteration=iteration,
                         )
                     raise

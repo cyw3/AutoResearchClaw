@@ -79,6 +79,10 @@ def create_llm_client(config: RCConfig) -> LLMClient | ACPClient:
         from researchclaw.llm.acp_client import ACPClient as _ACP
         return _ACP.from_rc_config(config)
 
+    if config.llm.provider == "cursor":
+        from researchclaw.llm.cursor_sdk_client import CursorSDKClient as _Cursor
+        return _Cursor.from_rc_config(config)
+
     from researchclaw.llm.client import LLMClient as _LLM
 
     # Use from_rc_config to properly initialize adapters (e.g., Anthropic)
@@ -92,7 +96,7 @@ def build_reviewer_llm(config: RCConfig):
     the generator client (backward-compatible). ACP-provider runs do not get a
     separate reviewer (None) — reviewing reuses the generator agent.
     """
-    if getattr(config.llm, "provider", "") == "acp":
+    if getattr(config.llm, "provider", "") in ("acp", "cursor"):
         return None
     from researchclaw.llm.client import LLMClient as _LLM
 
@@ -113,7 +117,7 @@ def build_panel_llms(config: RCConfig) -> list:
     """
     import dataclasses
 
-    if getattr(config.llm, "provider", "") == "acp":
+    if getattr(config.llm, "provider", "") in ("acp", "cursor"):
         return []
     if not getattr(config.llm, "debate_enabled", False):
         return []

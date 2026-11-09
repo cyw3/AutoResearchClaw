@@ -38,19 +38,17 @@ logger = logging.getLogger(__name__)
 
 
 def _topic_is_literature_first(config: RCConfig) -> bool:
-    """Return True when the topic is a survey/review or the project uses docs-first mode.
+    """Return True for survey topics or an explicit ``research.literature_first``.
 
     Literature-first topics produce papers grounded in existing work rather
     than novel experiments, so the "all simulated" and "no real metrics"
-    hard blocks should be bypassed.
+    hard blocks should be bypassed. ``project.mode: docs-first`` does not
+    opt in: that mode is the schema default and only changes gate behavior.
     """
     topic_lower = config.research.topic.lower()
     if any(kw in topic_lower for kw in ("survey", "review", "meta-analysis", "literature review")):
         return True
-    project_mode = getattr(config.research, "project_mode", None)
-    if isinstance(project_mode, str) and project_mode.lower() == "docs-first":
-        return True
-    return False
+    return bool(getattr(config.research, "literature_first", False))
 
 
 def _execute_paper_outline(

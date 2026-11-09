@@ -497,14 +497,19 @@ GENERIC = ConferenceTemplate(
         "amsmath",
         "graphicx",
         "natbib",
-        "geometry",
         "adjustbox",
     ),
     author_format="neurips",
     bib_style="plainnat",
     columns=1,
     style_download_url="",
-    preamble_extra="\\usepackage[utf8]{inputenc}\n\\usepackage[T1]{fontenc}\n\\usepackage{lmodern}\n\\usepackage[margin=1in]{geometry}",
+    # geometry only here (with margins) — not in extra_packages to avoid Option clash
+    preamble_extra=(
+        "\\usepackage[utf8]{inputenc}\n"
+        "\\usepackage[T1]{fontenc}\n"
+        "\\usepackage{lmodern}\n"
+        "\\usepackage[margin=1in]{geometry}"
+    ),
 )
 
 
@@ -520,6 +525,8 @@ CONFERENCE_REGISTRY: dict[str, ConferenceTemplate] = {
     # Generic for non-ML domains
     "generic": GENERIC,
     "article": GENERIC,
+    # Security / systems venues without a vendor style in-repo (use generic article + tweak venue line in draft)
+    "ndss": GENERIC,
     # Versioned keys (all versions)
     "neurips_2025": NEURIPS_2025,
     "neurips_2024": NEURIPS_2024,

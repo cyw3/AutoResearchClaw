@@ -17,6 +17,7 @@ from researchclaw.templates.conference import (
     ICLR_2026,
     ICML_2025,
     ICML_2026,
+    GENERIC,
 )
 from researchclaw.templates.converter import (
     markdown_to_latex,
@@ -112,6 +113,12 @@ class TestRenderPreamble:
     def test_icml_preamble_extra(self) -> None:
         tex = ICML_2025.render_preamble("Title", "Author", "Abstract")
         assert r"\icmltitlerunning{Title}" in tex
+
+    def test_generic_geometry_not_duplicated(self) -> None:
+        tex = GENERIC.render_preamble("Title", "Author", "Abstract")
+        assert "geometry" not in GENERIC.extra_packages
+        assert tex.count(r"\usepackage{geometry}") == 0
+        assert r"\usepackage[margin=1in]{geometry}" in tex
 
 
 class TestRenderFooter:

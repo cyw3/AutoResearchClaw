@@ -740,6 +740,28 @@ def run_doctor(config_path: str | Path) -> DoctorReport:
 
     if provider == "acp":
         checks.append(check_acp_agent(acp_agent_command))
+    elif provider == "cursor":
+        try:
+            from researchclaw.llm.cursor_sdk_client import CursorSDKClient
+
+            ok, detail = CursorSDKClient.from_rc_config(config).preflight()
+            checks.append(
+                CheckResult(
+                    "cursor_sdk",
+                    "pass" if ok else "fail",
+                    detail,
+                    fix="pip install cursor-sdk; export CURSOR_API_KEY",
+                )
+            )
+        except Exception as exc:  # noqa: BLE001
+            checks.append(
+                CheckResult(
+                    "cursor_sdk",
+                    "fail",
+                    str(exc),
+                    fix="Check llm.provider cursor and CURSOR_API_KEY",
+                )
+            )
     else:
         checks.append(check_llm_connectivity(base_url, api_key))
         checks.append(check_api_key_valid(base_url, api_key))

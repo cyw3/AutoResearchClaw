@@ -143,6 +143,11 @@ class ResearchConfig:
     daily_paper_count: int = 0
     quality_threshold: float = 0.0
     graceful_degradation: bool = True
+    # Opt in when the paper is grounded in existing results (survey, or a
+    # docs project whose numbers come from an external harness). This is
+    # independent of project.mode: docs-first is the default and still
+    # refuses simulated / missing metrics.
+    literature_first: bool = False
 
 
 @dataclass(frozen=True)
@@ -192,6 +197,18 @@ class AcpConfig:
 
 
 @dataclass(frozen=True)
+class CursorConfig:
+    """Cursor SDK agent settings (``llm.provider: cursor``)."""
+
+    cwd: str = "."
+    sandbox_enabled: bool = False
+    # Agent calls are much slower than chat completions. 1800 matches ACP.
+    # Resolved at parse time so an omitted llm.timeout_sec (default 600)
+    # does not cap Cursor runs at ten minutes.
+    timeout_sec: int = 1800
+
+
+@dataclass(frozen=True)
 class LlmConfig:
     provider: str
     base_url: str = ""
@@ -228,6 +245,7 @@ class LlmConfig:
     tournament_enabled: bool = False
     tournament_candidates: int = 3
     acp: AcpConfig = field(default_factory=AcpConfig)
+    cursor: CursorConfig = field(default_factory=CursorConfig)
 
 
 @dataclass(frozen=True)
@@ -963,6 +981,7 @@ class RCConfig:
                 daily_paper_count=int(research.get("daily_paper_count", 0)),
                 quality_threshold=float(research.get("quality_threshold", 0.0)),
                 graceful_degradation=bool(research.get("graceful_degradation", True)),
+                literature_first=bool(research.get("literature_first", False)),
             ),
             runtime=RuntimeConfig(
                 timezone=runtime["timezone"],
@@ -1115,6 +1134,8 @@ def validate_config(
         # ACP and Ollama don't need api_key_env (local/keyless providers)
         if llm_provider in ("acp", "ollama") and key == "llm.api_key_env":
             continue
+        if llm_provider == "cursor" and key == "llm.base_url":
+            continue
         if llm_provider == "acp" and key == "llm.base_url":
             continue
         value = _get_by_path(data, key)
@@ -1178,8 +1199,22 @@ def validate_config(
     )
 
 
+def _cursor_timeout_sec(data: dict[str, Any], cursor_data: dict[str, Any]) -> int:
+    """Prefer ``llm.cursor.timeout_sec``, then an explicit ``llm.timeout_sec``.
+
+    When neither key is present, use 1800. ``LlmConfig.timeout_sec`` still
+    defaults to 600 for HTTP providers; that default must not apply here.
+    """
+    if "timeout_sec" in cursor_data:
+        return _safe_int(cursor_data.get("timeout_sec"), 1800) or 1800
+    if "timeout_sec" in data:
+        return _safe_int(data.get("timeout_sec"), 1800) or 1800
+    return 1800
+
+
 def _parse_llm_config(data: dict[str, Any]) -> LlmConfig:
     acp_data = data.get("acp") or {}
+    cursor_data = data.get("cursor") or {}
     return LlmConfig(
         provider=data.get("provider", "openai-compatible"),
         base_url=data.get("base_url", ""),
@@ -1207,6 +1242,11 @@ def _parse_llm_config(data: dict[str, Any]) -> LlmConfig:
             session_name=acp_data.get("session_name", "researchclaw"),
             timeout_sec=int(acp_data.get("timeout_sec", 1800)),
             max_turns=_safe_int(acp_data.get("max_turns"), 1),
+        ),
+        cursor=CursorConfig(
+            cwd=cursor_data.get("cwd", "."),
+            sandbox_enabled=bool(cursor_data.get("sandbox_enabled", False)),
+            timeout_sec=_cursor_timeout_sec(data, cursor_data),
         ),
     )
 

@@ -745,6 +745,87 @@ class TestIterativeRefine:
         # Original code should be copied as final
         assert (stage_dir / "experiment_final.py").exists()
 
+    def test_simulated_harness_only_writes_runnable_main(
+        self,
+        run_dir: Path,
+        rc_config: RCConfig,
+        adapters: AdapterBundle,
+    ) -> None:
+        """Harness runs with no experiment/ tree still need a script that prints the metric."""
+        import subprocess
+
+        (run_dir / "stage-12" / "runs").mkdir(parents=True, exist_ok=True)
+        _write_prior_artifact(
+            run_dir,
+            12,
+            "runs/run-1.json",
+            json.dumps({"run_id": "run-1", "status": "completed", "metrics": {"f1": 0.91}}),
+        )
+        stage_dir = run_dir / "stage-13"
+        stage_dir.mkdir(parents=True, exist_ok=True)
+        import copy
+
+        sim_cfg = copy.deepcopy(rc_config)
+        object.__setattr__(sim_cfg.experiment, "mode", "simulated")
+        object.__setattr__(sim_cfg.experiment, "metric_key", "f1")
+        object.__setattr__(sim_cfg.experiment, "metric_direction", "maximize")
+
+        rc_executor._execute_iterative_refine(
+            stage_dir, run_dir, sim_cfg, adapters, llm=None
+        )
+
+        main_py = stage_dir / "experiment_final" / "main.py"
+        assert main_py.is_file()
+        completed = subprocess.run(
+            [sys.executable, str(main_py)],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        assert completed.returncode == 0
+        assert "f1: 0.91" in completed.stdout
+
+    def test_simulated_harness_only_matches_aggregate_metric_key(
+        self,
+        run_dir: Path,
+        rc_config: RCConfig,
+        adapters: AdapterBundle,
+    ) -> None:
+        """f1_mean must count as f1, matching the rest of Stage 13."""
+        import copy
+        import subprocess
+
+        (run_dir / "stage-12" / "runs").mkdir(parents=True, exist_ok=True)
+        _write_prior_artifact(
+            run_dir,
+            12,
+            "runs/run-1.json",
+            json.dumps(
+                {"run_id": "run-1", "status": "completed", "metrics": {"f1_mean": 0.91}}
+            ),
+        )
+        stage_dir = run_dir / "stage-13"
+        stage_dir.mkdir(parents=True, exist_ok=True)
+        sim_cfg = copy.deepcopy(rc_config)
+        object.__setattr__(sim_cfg.experiment, "mode", "simulated")
+        object.__setattr__(sim_cfg.experiment, "metric_key", "f1")
+        object.__setattr__(sim_cfg.experiment, "metric_direction", "maximize")
+
+        rc_executor._execute_iterative_refine(
+            stage_dir, run_dir, sim_cfg, adapters, llm=None
+        )
+
+        main_py = stage_dir / "experiment_final" / "main.py"
+        assert main_py.is_file()
+        completed = subprocess.run(
+            [sys.executable, str(main_py)],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        assert completed.returncode == 0
+        assert "f1: 0.91" in completed.stdout
+
     def test_refine_no_llm_saves_original_as_final(
         self,
         run_dir: Path,
@@ -812,6 +893,87 @@ class TestIterativeRefine:
         assert payload["pause_iteration"] == 1
         assert payload["best_version"] == "experiment/"
         assert not (stage_dir / "experiment_final").exists()
+
+    def test_refine_cursor_timeout_pauses_for_resume(
+        self,
+        run_dir: Path,
+        rc_config: RCConfig,
+        adapters: AdapterBundle,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        self._prepare_refine_inputs(run_dir)
+        stage_dir = run_dir / "stage-13"
+        stage_dir.mkdir(parents=True, exist_ok=True)
+
+        from researchclaw.pipeline.stage_impls import _execution as execution_impl
+
+        def _timeout(*args, **kwargs):
+            _ = args, kwargs
+            raise RuntimeError("Cursor prompt timed out after 1800s")
+
+        monkeypatch.setattr(execution_impl, "_chat_with_prompt", _timeout)
+
+        result = rc_executor._execute_iterative_refine(
+            stage_dir,
+            run_dir,
+            rc_config,
+            adapters,
+            llm=FakeLLMClient("unused"),
+        )
+
+        payload = json.loads(
+            (stage_dir / "refinement_log.json").read_text(encoding="utf-8")
+        )
+        assert result.status == StageStatus.PAUSED
+        assert result.decision == "resume"
+        assert payload["stop_reason"] == "cursor_prompt_timeout"
+        assert payload["pause_iteration"] == 1
+
+    def test_sandbox_harness_only_does_not_refine(
+        self,
+        run_dir: Path,
+        rc_config: RCConfig,
+        adapters: AdapterBundle,
+    ) -> None:
+        """A placeholder that reprints harness metrics is not an experiment to improve."""
+        import copy
+        import subprocess
+
+        (run_dir / "stage-12" / "runs").mkdir(parents=True, exist_ok=True)
+        _write_prior_artifact(
+            run_dir,
+            12,
+            "runs/run-1.json",
+            json.dumps({"run_id": "run-1", "status": "completed", "metrics": {"f1": 0.91}}),
+        )
+        stage_dir = run_dir / "stage-13"
+        stage_dir.mkdir(parents=True, exist_ok=True)
+        cfg = copy.deepcopy(rc_config)
+        object.__setattr__(cfg.experiment, "mode", "sandbox")
+        object.__setattr__(cfg.experiment, "metric_key", "f1")
+        object.__setattr__(cfg.experiment, "metric_direction", "maximize")
+        llm = FakeLLMClient("should not be called")
+
+        result = rc_executor._execute_iterative_refine(
+            stage_dir, run_dir, cfg, adapters, llm=llm
+        )
+
+        assert result.status == StageStatus.DONE
+        assert llm.calls == []
+        payload = json.loads(
+            (stage_dir / "refinement_log.json").read_text(encoding="utf-8")
+        )
+        assert payload["stop_reason"] == "harness_metrics_only"
+        assert payload["iterations"] == []
+        main_py = stage_dir / "experiment_final" / "main.py"
+        completed = subprocess.run(
+            [sys.executable, str(main_py)],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        assert completed.returncode == 0
+        assert "f1: 0.91" in completed.stdout
 
     def test_refine_with_llm_generates_improved_code(
         self,
@@ -2741,6 +2903,31 @@ class TestDataIntegrityBlock:
         assert meta.get("is_literature_first_topic") is False
         # LLM should NOT have been called
         assert len(llm.calls) == 0
+
+    def test_docs_first_is_not_literature_first(self, rc_config: RCConfig) -> None:
+        """project.mode defaults to docs-first and must not skip data-integrity blocks."""
+        from researchclaw.pipeline.stage_impls._paper_writing import (
+            _topic_is_literature_first,
+        )
+
+        assert rc_config.project.mode == "docs-first"
+        assert _topic_is_literature_first(rc_config) is False
+
+    def test_literature_first_flag_opts_in(self) -> None:
+        from types import SimpleNamespace
+
+        from researchclaw.pipeline.stage_impls._paper_writing import (
+            _topic_is_literature_first,
+        )
+
+        config = SimpleNamespace(
+            project=SimpleNamespace(mode="full-auto"),
+            research=SimpleNamespace(
+                topic="measured binary rewriting results",
+                literature_first=True,
+            ),
+        )
+        assert _topic_is_literature_first(config) is True
 
     def test_paper_draft_proceeds_with_metrics(
         self, tmp_path: Path, run_dir: Path, rc_config: RCConfig, adapters: AdapterBundle

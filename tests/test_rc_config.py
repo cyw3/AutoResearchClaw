@@ -123,6 +123,19 @@ def test_validate_config_missing_required_fields_returns_errors(tmp_path: Path):
     assert "Missing required field: research.topic" in result.errors
 
 
+def test_research_literature_first_defaults_false_and_parses_true(tmp_path: Path) -> None:
+    data = _valid_config_data()
+    cfg = RCConfig.from_dict(data, project_root=tmp_path, check_paths=False)
+    assert cfg.research.literature_first is False
+
+    opted = _valid_config_data()
+    research = dict(opted["research"])
+    research["literature_first"] = True
+    opted["research"] = research
+    cfg_on = RCConfig.from_dict(opted, project_root=tmp_path, check_paths=False)
+    assert cfg_on.research.literature_first is True
+
+
 def test_validate_config_rejects_invalid_project_mode(tmp_path: Path):
     data = _valid_config_data()
     data["project"]["mode"] = "invalid-mode"
