@@ -43,15 +43,13 @@ openclaw_bridge:
 
 llm:
   provider: "openai-compatible"
-  base_url: "https://api.openai.com/v1"
-  api_key_env: "OPENAI_API_KEY"
+  base_url: "https://api.deepseek.com/v1"
+  api_key_env: "DEEPSEEK_API_KEY"
   api_key: ""
-  wire_api: "responses"
-  primary_model: "gpt-5.3-codex"
+  wire_api: "chat_completions"
+  primary_model: "deepseek-v4.1-flash"
   timeout_sec: 600
-  fallback_models:
-    - "gpt-5.1-codex-max"
-    - "gpt-4o"
+  fallback_models: []  # DeepSeek-V4.1-Flash only, never add other models
 
 security:
   hitl_required_stages: []

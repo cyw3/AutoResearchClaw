@@ -36,14 +36,12 @@ openclaw_bridge:
 
 llm:
   provider: "openai-compatible"
-  base_url: "https://api.openai.com/v1"
+  base_url: "https://api.deepseek.com/v1"
   wire_api: "chat_completions"  # Set to "responses" for Responses-only gateways
-  api_key_env: "OPENAI_API_KEY"
+  api_key_env: "DEEPSEEK_API_KEY"
   api_key: ""
-  primary_model: "gpt-4o"
-  fallback_models:
-    - "gpt-4.1"
-    - "gpt-4o-mini"
+  primary_model: "deepseek-v4.1-flash"
+  fallback_models: []  # DeepSeek-V4.1-Flash only — do not add other models
   # --- MiniMax provider example (global OpenAI-compatible endpoint) ---
   # provider: "minimax-global"
   # base_url: "https://api.minimax.io/v1"

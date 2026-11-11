@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -888,17 +889,48 @@ def cmd_init(args: argparse.Namespace) -> int:
 
     content = example.read_text(encoding="utf-8")
 
+    # Looks for these placeholder lines in the example config. The example
+    # ships a working DeepSeek block, so match its values too.
+    _BASE_URL_PLACEHOLDERS = (
+        'base_url: "https://api.openai.com/v1"',
+        'base_url: "https://api.deepseek.com/v1"',
+    )
+    _API_KEY_ENV_PLACEHOLDERS = (
+        'api_key_env: "OPENAI_API_KEY"',
+        'api_key_env: "DEEPSEEK_API_KEY"',
+    )
+    _PRIMARY_MODEL_PLACEHOLDERS = (
+        'primary_model: "gpt-4o"',
+        'primary_model: "deepseek-v4.1-flash"',
+    )
+
+    def _replace_uncommented(text: str, needles: tuple[str, ...], new: str) -> str:
+        """Replace the value of the first matching uncommented ``key:`` line."""
+        for needle in needles:
+            key = needle.split(":", 1)[0]
+            lines = text.splitlines(keepends=True)
+            for index, line in enumerate(lines):
+                stripped = line.lstrip()
+                if stripped.startswith("#") or not stripped.startswith(f"{key}:"):
+                    continue
+                indent = line[: len(line) - len(stripped)]
+                lines[index] = f"{indent}{new}\n"
+                return "".join(lines)
+        return text
+
     # String-based replacement to preserve YAML comments
-    content = content.replace(
-        'provider: "openai-compatible"', f'provider: "{provider}"'
+    content = _replace_uncommented(
+        content,
+        ('provider: "openai-compatible"', 'provider: "deepseek"'),
+        f'provider: "{provider}"',
     )
 
     if provider == "acp":
         # ACP doesn't need base_url or api_key
-        content = content.replace(
-            'base_url: "https://api.openai.com/v1"', 'base_url: ""'
+        content = _replace_uncommented(content, _BASE_URL_PLACEHOLDERS, 'base_url: ""')
+        content = _replace_uncommented(
+            content, _API_KEY_ENV_PLACEHOLDERS, 'api_key_env: ""'
         )
-        content = content.replace('api_key_env: "OPENAI_API_KEY"', 'api_key_env: ""')
         # Beast Mode is incompatible with ACP (opencode_bridge prepends "openai/")
         content = content.replace(
             '    enabled: true                # Master switch (default: true)',
@@ -907,30 +939,36 @@ def cmd_init(args: argparse.Namespace) -> int:
     elif provider == "ollama":
         # Ollama runs locally — set base_url, clear api_key_env, set dummy key
         base_url = _PROVIDER_URLS["ollama"]
-        content = content.replace(
-            'base_url: "https://api.openai.com/v1"', f'base_url: "{base_url}"'
+        content = _replace_uncommented(
+            content, _BASE_URL_PLACEHOLDERS, f'base_url: "{base_url}"'
         )
-        content = content.replace('api_key_env: "OPENAI_API_KEY"', 'api_key_env: ""')
+        content = _replace_uncommented(
+            content, _API_KEY_ENV_PLACEHOLDERS, 'api_key_env: ""'
+        )
         content = content.replace('api_key: ""', 'api_key: "ollama"')
     else:
         base_url = _PROVIDER_URLS.get(provider, "https://api.openai.com/v1")
-        content = content.replace(
-            'base_url: "https://api.openai.com/v1"', f'base_url: "{base_url}"'
+        content = _replace_uncommented(
+            content, _BASE_URL_PLACEHOLDERS, f'base_url: "{base_url}"'
         )
         if api_key_env:
-            content = content.replace(
-                'api_key_env: "OPENAI_API_KEY"', f'api_key_env: "{api_key_env}"'
+            content = _replace_uncommented(
+                content, _API_KEY_ENV_PLACEHOLDERS, f'api_key_env: "{api_key_env}"'
             )
 
     if provider in _PROVIDER_MODELS:
         primary, fallbacks = _PROVIDER_MODELS[provider]
-        content = content.replace('primary_model: "gpt-4o"', f'primary_model: "{primary}"')
-        # Replace fallback models block
-        old_fallbacks = '  fallback_models:\n    - "gpt-4.1"\n    - "gpt-4o-mini"'
-        new_fallbacks = "  fallback_models:\n" + "".join(
-            f'    - "{m}"\n' for m in fallbacks
+        content = _replace_uncommented(
+            content, _PRIMARY_MODEL_PLACEHOLDERS, f'primary_model: "{primary}"'
         )
-        content = content.replace(old_fallbacks, new_fallbacks.rstrip("\n"))
+        # Rewrite the inline fallback_models list with the provider defaults.
+        content = re.sub(
+            r"^  fallback_models:[ \t]*(?:\[[^\]]*\])?[ \t]*(?:#.*)?$",
+            "  fallback_models:\n" + "\n".join(f'    - "{m}"' for m in fallbacks),
+            content,
+            count=1,
+            flags=re.MULTILINE,
+        )
 
     dest.write_text(content, encoding="utf-8")
     print(f"Created {dest} (provider: {provider})")

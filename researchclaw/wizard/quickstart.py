@@ -69,7 +69,7 @@ class QuickStartWizard:
         if provider == "openai-compatible":
             base_url = self._ask("API base URL", default="https://api.openai.com/v1")
             api_key_env = self._ask("API key env var", default="OPENAI_API_KEY")
-            model = self._ask("Model name", default="gpt-4o")
+            model = self._ask("Model name", default="deepseek-v4.1-flash")
             config["llm"].update({
                 "base_url": base_url,
                 "api_key_env": api_key_env,
