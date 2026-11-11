@@ -40,6 +40,9 @@ from researchclaw.prompts import PromptManager
 
 logger = logging.getLogger(__name__)
 
+# job_ledger jobs log to a file; only the tail is kept in run-1.json.
+_JOB_LOG_TAIL_CHARS = 65536
+
 
 def _execute_resource_planning(
     stage_dir: Path,
@@ -299,6 +302,166 @@ def _execute_experiment_run(
             evidence_refs=("stage-12/runs/",),
         )
     # ── End ColliderAgent mode ──────────────────────────────────────────
+
+    # ── Job-ledger mode (long-horizon real-toolchain jobs) ──────────────
+    # The experiment is a user-supplied argv template that drives the durable
+    # ledger (researchclaw.execution.job_ledger). Metrics are read back from
+    # the ledger state files, so numbers on paper always trace to a completed
+    # unit instead of to stdout parsing.
+    if mode == "job_ledger":
+        from researchclaw.experiment.job_ledger_sandbox import (
+            JobLedgerSandbox,
+            is_ledger_metric,
+        )
+
+        jl_cfg = config.experiment.job_ledger
+        if not jl_cfg.command:
+            logger.error(
+                "Stage 12 (job_ledger): experiment.job_ledger.command is empty — "
+                "nothing to run."
+            )
+            return StageResult(
+                stage=Stage.EXPERIMENT_RUN,
+                status=StageStatus.FAILED,
+                artifacts=("runs/",),
+                evidence_refs=("stage-12/runs/",),
+                error=(
+                    "job_ledger mode requires experiment.job_ledger.command "
+                    "(an argv template driving the durable ledger, e.g. "
+                    "['{python}', 'batch_runner.py', '--ledger', '{ledger_root}'])."
+                ),
+            )
+
+        def _keep_heartbeat() -> None:
+            # A multi-hour job must not look like a stalled pipeline.
+            from researchclaw.pipeline.runner import _write_heartbeat
+
+            _write_heartbeat(run_dir, Stage.EXPERIMENT_RUN, run_dir.name)
+
+        sandbox = JobLedgerSandbox(
+            jl_cfg,
+            runs_dir / "job",
+            context={"run_dir": str(run_dir), "stage_dir": str(stage_dir)},
+            on_tick=_keep_heartbeat,
+        )
+        result = sandbox.run("", timeout_sec=jl_cfg.timeout_sec)
+
+        metrics = dict(result.metrics or {})
+        real_metrics = {
+            key: value
+            for key, value in metrics.items()
+            if not is_ledger_metric(key)
+            and isinstance(value, (int, float))
+            and not math.isnan(value)
+            and not math.isinf(value)
+        }
+        summary = sandbox.last_summary or {}
+        status_counts = summary.get("status_counts") or {}
+        failed_units = int(status_counts.get("failed", 0) or 0)
+
+        if result.returncode == 0 and failed_units == 0 and real_metrics:
+            run_status = "completed"
+        elif real_metrics:
+            run_status = "partial"
+            logger.warning(
+                "Stage 12 (job_ledger): run finished with rc=%d, failed_units=%d — "
+                "keeping %d measured metric(s) as partial data",
+                result.returncode,
+                failed_units,
+                len(real_metrics),
+            )
+        else:
+            run_status = "failed"
+
+        primary_metric = None
+        candidate = real_metrics.get(config.experiment.metric_key)
+        if candidate is None:
+            # Never substitute an unrelated number: a fallback metric would be
+            # reported as the headline result and could end up in the paper.
+            logger.warning(
+                "Stage 12 (job_ledger): metric_key %r missing from ledger metrics %s "
+                "— primary_metric left unset",
+                config.experiment.metric_key,
+                sorted(real_metrics),
+            )
+        else:
+            primary_metric = float(candidate)
+
+        results_payload: dict[str, Any] = {
+            "source": "job_ledger",
+            "metric_key": config.experiment.metric_key,
+            # Only measured numbers: ledger bookkeeping lives in units /
+            # status_counts so it cannot be mistaken for a scientific result.
+            "metrics": real_metrics,
+            "primary_metric": primary_metric,
+            "ledger_root": summary.get("ledger_root"),
+            "units": summary.get("units", 0),
+            "status_counts": status_counts,
+            "failed_units": summary.get("failed_units", []),
+        }
+        (runs_dir / "results.json").write_text(
+            json.dumps(results_payload, indent=2), encoding="utf-8"
+        )
+        (stage_dir / "job_ledger_summary.json").write_text(
+            json.dumps(summary, indent=2), encoding="utf-8"
+        )
+        run_payload = {
+            "run_id": "run-1",
+            "task_id": "job-ledger-main",
+            "status": run_status,
+            "metrics": real_metrics,
+            "primary_metric": primary_metric,
+            "ledger_metrics": {
+                key: value for key, value in metrics.items() if is_ledger_metric(key)
+            },
+            "elapsed_sec": result.elapsed_sec,
+            "stdout": result.stdout[-_JOB_LOG_TAIL_CHARS:],
+            "stderr": result.stderr[:2000],
+            "timed_out": result.timed_out,
+            "command": summary.get("command"),
+            "units": summary.get("units", 0),
+            "completed_at": _utcnow_iso(),
+        }
+        (runs_dir / "run-1.json").write_text(
+            json.dumps(run_payload, indent=2), encoding="utf-8"
+        )
+
+        if result.timed_out:
+            logger.warning(
+                "Stage 12 (job_ledger): timed out after %.0fs — ledger keeps the "
+                "completed steps, so a rerun resumes instead of restarting",
+                result.elapsed_sec,
+            )
+
+        if not real_metrics:
+            logger.error(
+                "Stage 12 (job_ledger): job produced no measured metrics "
+                "(rc=%d, units=%s). Refusing to mark as DONE to prevent "
+                "fabricated results downstream.",
+                result.returncode,
+                summary.get("units", 0),
+            )
+            return StageResult(
+                stage=Stage.EXPERIMENT_RUN,
+                status=StageStatus.FAILED,
+                artifacts=("runs/",),
+                evidence_refs=("stage-12/runs/",),
+                error=(
+                    "job_ledger run produced zero measured metrics "
+                    f"(status={run_status}, rc={result.returncode}, "
+                    f"units={summary.get('units', 0)}). Write "
+                    "<ledger_root>/metrics.json or a numeric `summary` block "
+                    "in each unit state."
+                ),
+            )
+
+        return StageResult(
+            stage=Stage.EXPERIMENT_RUN,
+            status=StageStatus.DONE,
+            artifacts=("runs/", "job_ledger_summary.json"),
+            evidence_refs=("stage-12/runs/", "stage-12/job_ledger_summary.json"),
+        )
+    # ── End job-ledger mode ─────────────────────────────────────────────
 
     if mode in ("sandbox", "docker"):
         # P7: Auto-install missing dependencies before subprocess sandbox
@@ -688,20 +851,26 @@ def _execute_iterative_refine(
         # BUG-EX-01: NaN/Inf block all future improvement detection.
         return _finite_float(value)
 
-    # Agent-based modes (collider_agent, biology_agent, stat_agent): no Python
-    # refinement loop — the agent handled the full pipeline atomically in
-    # Stage 12 and wrote a canonical results.json.  "Refining" python
-    # source files that were never executed is wasted work; the only
-    # meaningful refinement option is re-invoking the agent (which the
-    # repair loop in pipeline/runner.py handles separately).  Create
-    # placeholder artifacts and exit so downstream stages see a non-empty
-    # experiment_final/.
-    if config.experiment.mode in ("collider_agent", "biology_agent", "stat_agent"):
+    # Agent-based modes (collider_agent, biology_agent, stat_agent) and the
+    # job_ledger backend: no Python refinement loop — the backend handled the
+    # full experiment atomically in Stage 12 and wrote a canonical
+    # results.json.  "Refining" python source files that were never executed is
+    # wasted work; the only meaningful refinement option is re-running the
+    # backend (which the repair loop in pipeline/runner.py handles separately).
+    # Create placeholder artifacts and exit so downstream stages see a
+    # non-empty experiment_final/.
+    if config.experiment.mode in (
+        "collider_agent",
+        "biology_agent",
+        "stat_agent",
+        "job_ledger",
+    ):
         agent_label = config.experiment.mode
         agent_pretty = {
             "collider_agent": "ColliderAgent",
             "biology_agent": "Biology-Agent",
             "stat_agent": "stat_research_agent",
+            "job_ledger": "Job Ledger",
         }.get(agent_label, agent_label)
         logger.info(
             "Stage 13: Skipping iterative refinement in %s mode "

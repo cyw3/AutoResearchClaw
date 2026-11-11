@@ -100,6 +100,11 @@ def create_sandbox(config: ExperimentConfig, workdir: Path) -> SandboxProtocol:
         sa_cfg = config.stat_agent
         return StatAgentSandbox(sa_cfg, workdir)
 
+    if config.mode == "job_ledger":
+        from researchclaw.experiment.job_ledger_sandbox import JobLedgerSandbox
+
+        return JobLedgerSandbox(config.job_ledger, workdir)
+
     if config.mode != "sandbox":
         raise RuntimeError(
             f"Unsupported experiment mode for create_sandbox(): {config.mode}"

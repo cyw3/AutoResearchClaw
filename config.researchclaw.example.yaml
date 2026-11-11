@@ -96,6 +96,7 @@ experiment:
   #   "sandbox"   — 在本地沙盒中实际执行生成的 Python 代码，产出真实实验数据
   #   "docker"    — 在 Docker 容器中执行，支持 GPU 直通、依赖自动安装、内存隔离
   #   "simulated" — 不执行代码，使用公式生成假数据（仅用于框架开发调试，不应用于论文生成）
+  #   "job_ledger" — 长时程真实工具链作业，由持久化作业账本驱动（见下方 job_ledger 段）
   mode: "sandbox"
   time_budget_sec: 300
   max_iterations: 10
@@ -133,6 +134,19 @@ experiment:
     docker_network_policy: "none"   # none | full
     docker_memory_limit_mb: 8192
     docker_shm_size_mb: 2048
+  # Job Ledger — long-horizon, real-toolchain jobs (only used when mode: "job_ledger")
+  # `command` is an argv template: {python} {run_dir} {stage_dir} {ledger_root}
+  # {project_root} are substituted before launch. The command must drive the
+  # durable ledger (researchclaw/execution/job_ledger.py): one JSON state file
+  # per unit, idempotent steps, resumable after a kill. Stage 12 reads metrics
+  # from <ledger_root>/metrics.json or from each unit's numeric `summary` block.
+  # job_ledger:
+  #   command: ["{python}", "batch_runner.py", "--ledger", "{ledger_root}"]
+  #   ledger_root: ""          # default: <stage-12>/jobs/ledger
+  #   timeout_sec: 0           # 0 = no timeout (long jobs outlive time_budget_sec)
+  #   env: {"PYTHONPATH": "."}
+  #   log_name: "job.log"
+
   # OpenCode Beast Mode — external AI coding agent for complex experiments
   # Install: npm i -g opencode-ai@latest  (or use `researchclaw setup`)
   opencode:

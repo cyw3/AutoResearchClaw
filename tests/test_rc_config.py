@@ -217,6 +217,77 @@ def test_validate_config_accepts_docker_mode(tmp_path: Path):
     assert result.ok is True
 
 
+def test_validate_config_accepts_job_ledger_mode(tmp_path: Path):
+    data = _valid_config_data()
+    data["experiment"]["mode"] = "job_ledger"
+
+    result = validate_config(data, project_root=tmp_path, check_paths=False)
+
+    assert result.ok is True
+
+
+def test_experiment_config_default_job_ledger_is_disabled():
+    defaults = ExperimentConfig().job_ledger
+
+    assert defaults.command == ()
+    assert defaults.ledger_root == ""
+    assert defaults.timeout_sec == 0  # 0 = no timeout for long jobs
+    assert defaults.env == ()
+    assert defaults.log_name == "job.log"
+
+
+def test_rcconfig_parses_job_ledger_block(tmp_path: Path):
+    data = _valid_config_data()
+    data["experiment"]["mode"] = "job_ledger"
+    data["experiment"]["job_ledger"] = {
+        "command": ["{python}", "runner.py", "--ledger", "{ledger_root}"],
+        "ledger_root": "jobs/ledger",
+        "timeout_sec": 0,
+        "env": {"PYTHONPATH": "/repo", "TOKEN": "abc"},
+        "log_name": "run.log",
+    }
+
+    config = RCConfig.from_dict(data, project_root=tmp_path, check_paths=False)
+    job_ledger = config.experiment.job_ledger
+
+    assert job_ledger.command == ("{python}", "runner.py", "--ledger", "{ledger_root}")
+    assert job_ledger.ledger_root == "jobs/ledger"
+    assert job_ledger.timeout_sec == 0
+    assert job_ledger.env == (("PYTHONPATH", "/repo"), ("TOKEN", "abc"))
+    assert job_ledger.log_name == "run.log"
+
+
+def test_job_ledger_command_accepts_a_string_and_env_list(tmp_path: Path):
+    data = _valid_config_data()
+    data["experiment"]["job_ledger"] = {
+        "command": "{python} runner.py",
+        "env": [["A", "1"], "B=2"],
+    }
+
+    config = RCConfig.from_dict(data, project_root=tmp_path, check_paths=False)
+    job_ledger = config.experiment.job_ledger
+
+    assert job_ledger.command == ("{python} runner.py",)
+    assert job_ledger.env == (("A", "1"), ("B", "2"))
+
+
+def test_job_ledger_block_survives_to_dict_roundtrip(tmp_path: Path):
+    data = _valid_config_data()
+    data["experiment"]["mode"] = "job_ledger"
+    data["experiment"]["job_ledger"] = {
+        "command": ["{python}", "runner.py"],
+        "ledger_root": "jobs/ledger",
+        "env": {"PYTHONPATH": "/repo"},
+    }
+    original = RCConfig.from_dict(data, project_root=tmp_path, check_paths=False)
+
+    normalized = cast(dict[str, object], json.loads(json.dumps(original.to_dict())))
+    rehydrated = RCConfig.from_dict(normalized, project_root=tmp_path, check_paths=False)
+
+    assert rehydrated.experiment.job_ledger == original.experiment.job_ledger
+    assert rehydrated.experiment.job_ledger.command == ("{python}", "runner.py")
+
+
 def test_validate_config_rejects_invalid_metric_direction(tmp_path: Path):
     data = _valid_config_data()
     data["experiment"]["metric_direction"] = "upward"

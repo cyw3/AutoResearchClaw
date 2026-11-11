@@ -612,8 +612,18 @@ def execute_stage(
     _t_health_start = _time.monotonic()
     contract: StageContract = CONTRACTS[stage]
 
-    if contract.input_files:
-        for input_file in contract.input_files:
+    required_inputs = contract.input_files
+    if required_inputs and config.experiment.mode == "job_ledger":
+        # The ledger backend executes an external command: it consumes neither
+        # the per-iteration schedule nor the generated Python code.
+        required_inputs = tuple(
+            name
+            for name in required_inputs
+            if name not in ("schedule.json", "experiment/")
+        )
+
+    if required_inputs:
+        for input_file in required_inputs:
             found = _read_prior_artifact(run_dir, input_file)
             if found is None:
                 result = StageResult(

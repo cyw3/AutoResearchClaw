@@ -672,13 +672,15 @@ def execute_pipeline(
             and result.status == StageStatus.DONE
             and config.experiment.repair.enabled
             # Agent-based sandboxes (collider_agent / biology_agent / stat_agent)
-            # write a canonical results.json atomically in stage 12.  Stage-14
-            # repair would just iterate on python source files that the agent
-            # never executed, then call sandbox.run_project() — which for agent
-            # sandboxes redundantly re-spawns the whole agent.  Skip the
-            # python-code repair loop entirely; the proceed-or-reject decision
-            # belongs in stage 15 RESEARCH_DECISION.
-            and config.experiment.mode not in ("collider_agent", "biology_agent", "stat_agent")
+            # and job_ledger write a canonical results.json atomically in
+            # stage 12.  Stage-14 repair would just iterate on python source
+            # files that the agent never executed, then call
+            # sandbox.run_project() — which re-spawns the whole agent (or the
+            # whole job) redundantly.  Skip the python-code repair loop
+            # entirely; the proceed-or-reject decision belongs in stage 15
+            # RESEARCH_DECISION.
+            and config.experiment.mode
+            not in ("collider_agent", "biology_agent", "stat_agent", "job_ledger")
         ):
             _run_experiment_diagnosis(run_dir, config, run_id)
 
@@ -716,7 +718,8 @@ def execute_pipeline(
                 _promote_best_stage14(run_dir, config)
             elif pivot_count < MAX_DECISION_PIVOTS:
                 rollback_target = DECISION_ROLLBACK[result.decision]
-                # Agent-based modes: REFINE means re-run the agent atomically.
+                # Agent-based modes / job_ledger: REFINE means re-run the
+                # backend atomically (the ledger resumes completed steps).
                 # Stage 13 ITERATIVE_REFINE is a no-op for these modes (it
                 # would refine python files the agent never executed), so
                 # routing REFINE there wastes a pipeline cycle.  Send REFINE
@@ -724,7 +727,8 @@ def execute_pipeline(
                 # claude with the REPAIR_PROMPT.md the requirements gate
                 # just wrote.
                 if (
-                    config.experiment.mode in ("collider_agent", "biology_agent", "stat_agent")
+                    config.experiment.mode
+                    in ("collider_agent", "biology_agent", "stat_agent", "job_ledger")
                     and result.decision == "refine"
                 ):
                     rollback_target = Stage.EXPERIMENT_RUN
@@ -751,7 +755,8 @@ def execute_pipeline(
                 # is what makes the requirements-gate retry usefully
                 # incremental rather than just a stochastic resample.
                 _agent_refine = (
-                    config.experiment.mode in ("collider_agent", "biology_agent", "stat_agent")
+                    config.experiment.mode
+                    in ("collider_agent", "biology_agent", "stat_agent", "job_ledger")
                     and result.decision == "refine"
                 )
                 _version_rollback_stages(

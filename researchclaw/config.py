@@ -102,6 +102,7 @@ EXPERIMENT_MODES = {
     "ssh_remote",
     "colab_drive",
     "agentic",
+    "job_ledger",      # Long-horizon real-toolchain jobs via the durable ledger
     "collider_agent",  # Physics: ColliderAgent via Claude Code + Magnus
     "biology_agent",   # Biology: Biology-Agent (FBA / pFBA / FVA via COBRApy + BIGG) via Claude Code
     "stat_agent",      # Statistics: stat_research_agent (sim studies, CI/coverage) via Claude Code
@@ -601,6 +602,27 @@ class CliAgentConfig:
 
 
 @dataclass(frozen=True)
+class JobLedgerConfig:
+    """Long-horizon job executed through the durable job ledger.
+
+    The command is an argv template. Placeholders ``{python}``, ``{run_dir}``,
+    ``{stage_dir}``, ``{ledger_root}`` and ``{project_root}`` are substituted
+    before launch. Metrics are collected from the ledger state files, so any
+    runner built on :mod:`researchclaw.execution.job_ledger` feeds real numbers
+    into Stage 12 instead of a synthetic metric.
+
+    ``timeout_sec = 0`` means no timeout — long jobs are expected to outlive
+    the default experiment budget.
+    """
+
+    command: tuple[str, ...] = ()
+    ledger_root: str = ""  # default: <stage_dir>/jobs/ledger
+    timeout_sec: int = 0
+    env: tuple[tuple[str, str], ...] = ()
+    log_name: str = "job.log"
+
+
+@dataclass(frozen=True)
 class ExperimentConfig:
     mode: str = "simulated"
     time_budget_sec: int = 300
@@ -612,6 +634,7 @@ class ExperimentConfig:
     sandbox: SandboxConfig = field(default_factory=SandboxConfig)
     docker: DockerSandboxConfig = field(default_factory=DockerSandboxConfig)
     agentic: AgenticConfig = field(default_factory=AgenticConfig)
+    job_ledger: JobLedgerConfig = field(default_factory=JobLedgerConfig)
     collider_agent: ColliderAgentConfig = field(default_factory=ColliderAgentConfig)
     biology_agent: BiologyAgentConfig = field(default_factory=BiologyAgentConfig)
     stat_agent: StatAgentConfig = field(default_factory=StatAgentConfig)
@@ -1378,6 +1401,31 @@ def _parse_stat_agent_config(data: dict[str, Any]) -> StatAgentConfig:
     )
 
 
+def _parse_job_ledger_config(data: dict[str, Any]) -> JobLedgerConfig:
+    if not data:
+        return JobLedgerConfig()
+    command_raw = data.get("command", ())
+    if isinstance(command_raw, str):
+        command_raw = [command_raw]
+    env_raw = data.get("env", ())
+    if isinstance(env_raw, dict):
+        env_raw = list(env_raw.items())
+    env_pairs: list[tuple[str, str]] = []
+    for item in env_raw or ():
+        if isinstance(item, (list, tuple)) and len(item) == 2:
+            env_pairs.append((str(item[0]), str(item[1])))
+        elif isinstance(item, str) and "=" in item:
+            key, _, value = item.partition("=")
+            env_pairs.append((key, value))
+    return JobLedgerConfig(
+        command=tuple(str(part) for part in command_raw),
+        ledger_root=str(data.get("ledger_root", "")),
+        timeout_sec=_safe_int(data.get("timeout_sec"), 0),
+        env=tuple(env_pairs),
+        log_name=str(data.get("log_name", "job.log")),
+    )
+
+
 def _parse_experiment_config(data: dict[str, Any]) -> ExperimentConfig:
     sandbox_data = data.get("sandbox") or {}
     docker_data = data.get("docker") or {}
@@ -1452,6 +1500,7 @@ def _parse_experiment_config(data: dict[str, Any]) -> ExperimentConfig:
             setup_script=colab_data.get("setup_script", ""),
         ),
         agentic=_parse_agentic_config(data.get("agentic") or {}),
+        job_ledger=_parse_job_ledger_config(data.get("job_ledger") or {}),
         collider_agent=_parse_collider_agent_config(data.get("collider_agent") or {}),
         biology_agent=_parse_biology_agent_config(data.get("biology_agent") or {}),
         stat_agent=_parse_stat_agent_config(data.get("stat_agent") or {}),

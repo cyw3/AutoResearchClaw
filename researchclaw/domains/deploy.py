@@ -198,6 +198,7 @@ _SEQUENCE_FIELD_MAP: dict[str, str] = {
 _NESTED_BLOCK_FIELDS: tuple[str, ...] = (
     "collider_agent",
     "agentic",
+    "job_ledger",
     "figure_agent",
     "code_agent",
     "cli_agent",
