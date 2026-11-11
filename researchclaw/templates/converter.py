@@ -118,6 +118,19 @@ def markdown_to_latex(
         abstract=_convert_inline(abstract),
     )
     footer = template.render_footer(bib_file)
+    if template.name == "issta" and "Data Availability" not in body:
+        # ISSTA requires this section immediately before the references.
+        # It does not count toward the 18-page limit. Do not invent an
+        # archival URL; the sentence says the link is still absent.
+        body += (
+            "\n\\section{Data Availability}\n"
+            "\\label{sec:data-availability}\n"
+            "An anonymous archival link for the data and the mechanism "
+            "used to generate the evidence in this paper is not included "
+            "in this generated source. Replace this paragraph with that "
+            "link, or with an explanation of why the artifact cannot be "
+            "shared, before submission.\n"
+        )
 
     tex = preamble + "\n" + body + footer
 
@@ -259,7 +272,7 @@ def _sanitize_latex_output(
     #    Handles both raw underscores and LaTeX-escaped underscores (\_)
     #    Pattern: condition/env/step/metric_name: value  (3+ path segments)
     tex = re.sub(
-        r"\\texttt\{[a-zA-Z0-9_\\_/.:=-]+(?:/[a-zA-Z0-9_\\_/.:=-]+){2,}(?:\s*[=:]\s*[^}]*)?\}",
+        r"\\texttt\{[a-zA-Z0-9_\\_/.:=-]+(?:/[a-zA-Z0-9_\\_/.:=-]+){2,}\s*[=:]\s*[^}]*\}",
         "",
         tex,
     )
@@ -342,6 +355,19 @@ def _preprocess_markdown(md: str) -> str:
     """
     text = md
 
+    # Exporter instructions are not part of the paper.
+    text = re.sub(
+        r"(?m)^Clean publication markdown below\..*(?:\n|$)",
+        "",
+        text,
+        count=1,
+    )
+    text = re.sub(
+        r"\n---\s*\n+\*\*Formatting notes \(for your export pipeline\):\*\*[\s\S]*\Z",
+        "\n",
+        text,
+    )
+
     # 1. Strip outer markdown fences (LLMs sometimes wrap entire paper in them)
     #    Repeatedly strip in case of double-wrapping.
     #    Try greedy match first (handles papers with inner code blocks),
@@ -392,13 +418,15 @@ def _preprocess_markdown(md: str) -> str:
     # 2d. Remove raw \texttt{...} or backtick-wrapped metric key paths
     # Pattern: \texttt{some/long/metric_path/name: 0.1234} or `path/to/metric: val`
     text = re.sub(
-        r"\\texttt\{[a-zA-Z0-9_/.:=-]+(?:/[a-zA-Z0-9_/.:=-]+){2,}(?:\s*[=:]\s*[^}]*)?\}",
+        r"\\texttt\{[a-zA-Z0-9_/.:=-]+(?:/[a-zA-Z0-9_/.:=-]+){2,}\s*[=:]\s*[^}]*\}",
         "",
         text,
     )
-    # Also strip backtick-wrapped metric paths in markdown source
+    # Also strip backtick-wrapped metric paths in markdown source.
+    # A filename such as data/pyvul/codeql_baseline.jsonl has the same
+    # slash count but no assignment, and must be kept.
     text = re.sub(
-        r"`[a-zA-Z0-9_/.-]+(?:/[a-zA-Z0-9_/.-]+){2,}(?:\s*[=:]\s*[^`]*)?`",
+        r"`[a-zA-Z0-9_/.-]+(?:/[a-zA-Z0-9_/.-]+){2,}\s*[=:]\s*[^`]*`",
         "",
         text,
     )

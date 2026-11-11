@@ -18,6 +18,7 @@ from researchclaw.templates.conference import (
     ICML_2025,
     ICML_2026,
     GENERIC,
+    ISSTA,
 )
 from researchclaw.templates.converter import (
     markdown_to_latex,
@@ -163,6 +164,19 @@ class TestGetTemplate:
         with pytest.raises(KeyError, match="Unknown conference"):
             get_template("aaai_2025")
 
+    def test_issta_uses_acmart(self) -> None:
+        t = get_template("issta")
+        assert t is ISSTA
+        assert t.document_class == "acmart"
+        assert t.bib_style == "ACM-Reference-Format"
+        tex = t.render_preamble("Title", "Anonymous", "Abstract text.")
+        assert t.columns == 1
+        assert r"\documentclass[acmsmall,screen,review,anonymous]{acmart}" in tex
+        assert r"\usepackage{hyperref}" not in tex
+        assert r"\setcopyright{none}" in tex
+        assert r"\maketitle" in tex
+        assert r"\bibliographystyle{ACM-Reference-Format}" in t.render_footer()
+
 
 class TestListConferences:
     """Tests for list_conferences()."""
@@ -179,8 +193,8 @@ class TestListConferences:
         assert "prx" in names
         assert "epjc" in names
         # Should be deduplicated — no aliases
-        # 6 ML conferences + 1 generic + 5 HEP = 12
-        assert len(names) == 12
+        # 6 ML conferences + 1 generic + 1 ISSTA + 5 HEP = 13
+        assert len(names) == 13
 
     def test_sorted(self) -> None:
         names = list_conferences()
@@ -471,6 +485,26 @@ class TestMarkdownToLatex:
         "# References\n"
         "1. Doe et al. (2024)\n"
     )
+
+    def test_issta_keeps_artifact_path_and_drops_metric_dump(self) -> None:
+        md = (
+            "# Title\n\n"
+            "# Abstract\n"
+            "On `data/pyvul/codeql_baseline.jsonl`, parsing yields 70 rows.\n"
+            "Dump `condition/seed/records_parsed: 0` is not a filename.\n\n"
+            "# Introduction\n"
+            "See the artifact.\n\n"
+            "---\n\n"
+            "**Formatting notes (for your export pipeline):**\n\n"
+            "- Remove this block.\n"
+        )
+        tex = markdown_to_latex(md, ISSTA, authors="Anonymous")
+        assert r"\documentclass[acmsmall,screen,review,anonymous]{acmart}" in tex
+        assert r"\section{Data Availability}" in tex
+        assert tex.index("Data Availability") < tex.index(r"\bibliography")
+        assert "codeql\\_baseline.jsonl" in tex or "codeql_baseline.jsonl" in tex
+        assert "records_parsed" not in tex
+        assert "Formatting notes" not in tex
 
     def test_neurips_full(self) -> None:
         tex = markdown_to_latex(self.SAMPLE_MD, NEURIPS_2024)

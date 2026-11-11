@@ -156,6 +156,18 @@ class ConferenceTemplate:
                 f"\\author{{{authors}}}\n"
                 f"\\affiliation{{Affiliation}}"
             )
+        if self.author_format == "acmart":
+            # ISSTA uses the ACM primary article class. Author and affiliation
+            # stay in the preamble; the anonymous,review class options hide
+            # them on the submitted PDF.
+            return (
+                f"\\author{{{authors}}}\n"
+                f"\\renewcommand{{\\shortauthors}}{{{authors}}}\n"
+                f"\\affiliation{{%\n"
+                f"  \\institution{{Affiliation}}%\n"
+                f"  \\country{{Country}}%\n"
+                f"}}"
+            )
         return f"\\author{{{authors}}}"
 
 
@@ -482,6 +494,27 @@ EPJC = ConferenceTemplate(
 )
 
 
+# ISSTA research papers are published in PACMSE and must use the acmart
+# acmsmall sample (single column), not the two-column sigconf proceedings
+# style. The call for papers asks for exactly these class options.
+# https://conf.researchr.org/track/issta-2026/issta-2026-research-papers
+# acmart already loads hyperref, natbib, graphicx, booktabs, and amsmath.
+ISSTA = ConferenceTemplate(
+    name="issta",
+    display_name="ISSTA 2026 research papers (PACMSE, acmsmall)",
+    year=2026,
+    document_class="acmart",
+    style_package="",
+    style_options="acmsmall,screen,review,anonymous",
+    extra_packages=(),
+    author_format="acmart",
+    bib_style="ACM-Reference-Format",
+    columns=1,
+    style_download_url="https://www.acm.org/publications/proceedings-template",
+    preamble_extra="\\setcopyright{none}\n",
+)
+
+
 GENERIC = ConferenceTemplate(
     name="generic",
     display_name="Generic Academic Paper",
@@ -525,6 +558,7 @@ CONFERENCE_REGISTRY: dict[str, ConferenceTemplate] = {
     # Generic for non-ML domains
     "generic": GENERIC,
     "article": GENERIC,
+    "issta": ISSTA,
     # Security / systems venues without a vendor style in-repo (use generic article + tweak venue line in draft)
     "ndss": GENERIC,
     # Versioned keys (all versions)
