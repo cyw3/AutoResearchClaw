@@ -100,7 +100,7 @@ def test_validate_security_flags_every_dangerous_call(call_name: str):
     assert all(issue.category == "security" for issue in result.issues)
 
 
-@pytest.mark.parametrize("module_name", sorted(BANNED_MODULES))
+@pytest.mark.parametrize("module_name", sorted(BANNED_MODULES - {"subprocess"}))
 def test_validate_security_flags_every_banned_import(module_name: str):
     result = validate_security(f"import {module_name}")
 
@@ -120,6 +120,27 @@ def test_validate_security_flags_every_banned_from_import(module_name: str):
     assert issue.severity == "error"
     assert issue.category == "security"
     assert issue.message == f"Banned module import: from {module_name}"
+
+
+def test_subprocess_is_allowed_only_for_the_codeql_binary(monkeypatch: pytest.MonkeyPatch):
+    codeql = "/data/research/AutoResearchClaw/projects/python-taint/tools/codeql/codeql"
+    monkeypatch.setenv("RESEARCHCLAW_CODEQL_BIN", codeql)
+    allowed = (
+        "import subprocess\n"
+        f"subprocess.run([{codeql!r}, 'version'], shell=False)\n"
+    )
+    assert validate_security(allowed).ok is True
+
+    rejected = [
+        "import subprocess\nsubprocess.run(['rm', '-rf', '/'])\n",
+        "import subprocess\nsubprocess.run(['codeql', 'version'])\n",
+        f"import subprocess\nsubprocess.run([{codeql!r}, 'version'], shell=True)\n",
+        "from subprocess import run\n",
+        "import subprocess as sp\nsp.run(['rm'])\n",
+    ]
+    for code in rejected:
+        result = validate_security(code)
+        assert result.ok is False, code
 
 
 def test_validate_imports_recognizes_stdlib_modules_by_default():

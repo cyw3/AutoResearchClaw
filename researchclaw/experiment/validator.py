@@ -8,9 +8,17 @@ enabling automated repair via LLM re-generation.
 from __future__ import annotations
 
 import ast
+import os
 import sys
 from dataclasses import dataclass, field
 from typing import Any
+
+# Exact CodeQL CLI paths generated experiment code may pass to subprocess.
+# Any other executable stays forbidden. Override with RESEARCHCLAW_CODEQL_BIN
+# (os.pathsep-separated) when the binary lives somewhere else.
+_DEFAULT_CODEQL_BIN = (
+    "/data/research/AutoResearchClaw/projects/python-taint/tools/codeql/codeql"
+)
 
 # ---------------------------------------------------------------------------
 # Data types
@@ -206,43 +214,122 @@ COMMON_SCIENCE: frozenset[str] = frozenset(
 # ---------------------------------------------------------------------------
 
 
+_SUBPROCESS_RUNNERS = frozenset({"run", "call", "check_call", "check_output"})
+
+
+def allowed_codeql_bins() -> frozenset[str]:
+    """Return CodeQL executables experiment code is allowed to launch."""
+    bins = {_DEFAULT_CODEQL_BIN}
+    extra = os.environ.get("RESEARCHCLAW_CODEQL_BIN", "")
+    for item in extra.split(os.pathsep):
+        item = item.strip()
+        if item:
+            bins.add(item)
+    return frozenset(bins)
+
+
+def _literal_argv(node: ast.expr) -> list[str] | None:
+    """Return a list of string arguments when every element is a literal."""
+    if isinstance(node, ast.Constant) and type(node.value) is str:
+        return [node.value]
+    if isinstance(node, ast.List) and node.elts:
+        argv: list[str] = []
+        for elt in node.elts:
+            if isinstance(elt, ast.Constant) and type(elt.value) is str:
+                argv.append(elt.value)
+            elif isinstance(elt, ast.Constant) and type(elt.value) is int:
+                argv.append(str(elt.value))
+            else:
+                return None
+        return argv
+    return None
+
+
+def _shell_not_false(node: ast.Call) -> bool:
+    """True when shell= is passed and is not the literal False."""
+    for kw in node.keywords:
+        if kw.arg != "shell":
+            continue
+        return not (isinstance(kw.value, ast.Constant) and kw.value.value is False)
+    return False
+
+
+def _active_tool_policy():
+    """Load the policy for the current environment (cached by path + bins)."""
+    from researchclaw.experiment.tool_policy import policy_for
+
+    return policy_for(
+        os.environ.get("RESEARCHCLAW_TOOL_POLICY", ""),
+        os.environ.get("RESEARCHCLAW_CODEQL_BIN", ""),
+    )
+
+
+def _is_allowed_invocation(node: ast.Call) -> bool:
+    """True when the subprocess call is permitted by the active tool policy.
+
+    Without ``RESEARCHCLAW_TOOL_POLICY`` this is exactly the historical
+    behaviour: only the bundled CodeQL binary, with ``shell=False``.
+    """
+    if not node.args or _shell_not_false(node):
+        return False
+    argv = _literal_argv(node.args[0])
+    if not argv:
+        return False
+    allowed, _reason = _active_tool_policy().allows(argv)
+    return allowed
+
+
 class _SecurityVisitor(ast.NodeVisitor):
     """Walk AST to detect dangerous calls and imports."""
 
     def __init__(self) -> None:
         self.issues: list[ValidationIssue] = []
+        self._subprocess_names: set[str] = set()
+
+    def _flag(self, node: ast.AST, message: str) -> None:
+        self.issues.append(
+            ValidationIssue(
+                severity="error",
+                category="security",
+                message=message,
+                line=getattr(node, "lineno", None),
+                col=getattr(node, "col_offset", None),
+            )
+        )
 
     # -- function calls --
 
     def visit_Call(self, node: ast.Call) -> None:
         name = _resolve_call_name(node.func)
         if name in DANGEROUS_BUILTINS:
-            self.issues.append(
-                ValidationIssue(
-                    severity="error",
-                    category="security",
-                    message=f"Dangerous built-in call: {name}()",
-                    line=node.lineno,
-                    col=node.col_offset,
-                )
-            )
+            self._flag(node, f"Dangerous built-in call: {name}()")
+        elif self._is_subprocess_call(node):
+            attr = node.func.attr if isinstance(node.func, ast.Attribute) else ""
+            if attr in _SUBPROCESS_RUNNERS and _is_allowed_invocation(node):
+                self.generic_visit(node)
+                return
+            shown = f"subprocess.{attr}()" if attr else f"{name}()"
+            self._flag(node, f"Dangerous call: {shown}")
         elif name in DANGEROUS_CALLS:
-            self.issues.append(
-                ValidationIssue(
-                    severity="error",
-                    category="security",
-                    message=f"Dangerous call: {name}()",
-                    line=node.lineno,
-                    col=node.col_offset,
-                )
-            )
+            self._flag(node, f"Dangerous call: {name}()")
         self.generic_visit(node)
+
+    def _is_subprocess_call(self, node: ast.Call) -> bool:
+        func = node.func
+        if not isinstance(func, ast.Attribute):
+            return False
+        return _resolve_call_name(func.value) in self._subprocess_names
 
     # -- import statements --
 
     def visit_Import(self, node: ast.Import) -> None:
         for alias in node.names:
             top = alias.name.split(".")[0]
+            # import subprocess is allowed. The only legal use is launching
+            # an allowed CodeQL binary; every other subprocess call is rejected.
+            if alias.name == "subprocess":
+                self._subprocess_names.add(alias.asname or alias.name)
+                continue
             if top in BANNED_MODULES:
                 self.issues.append(
                     ValidationIssue(
