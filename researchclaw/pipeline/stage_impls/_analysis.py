@@ -668,7 +668,15 @@ Generated: {_utcnow_iso()}
                 max_iterations=config.experiment.figure_agent.max_iterations,
                 render_timeout_sec=config.experiment.figure_agent.render_timeout_sec,
                 use_docker=config.experiment.figure_agent.use_docker,
-                docker_image=config.experiment.figure_agent.docker_image,
+                docker_image=(
+                    config.experiment.docker.image
+                    if (
+                        config.experiment.mode == "docker"
+                        and config.experiment.figure_agent.docker_image
+                        == "researchclaw/experiment:latest"
+                    )
+                    else config.experiment.figure_agent.docker_image
+                ),
                 output_format=config.experiment.figure_agent.output_format,
                 gemini_api_key=config.experiment.figure_agent.gemini_api_key,
                 gemini_model=config.experiment.figure_agent.gemini_model,
@@ -786,6 +794,11 @@ def _parse_decision(text: str) -> str | None:
         stripped = line.strip().strip("*").strip("#").strip()
         if stripped.upper() in ("PROCEED", "PIVOT", "REFINE"):
             return stripped.lower()
+        # Accept a bold keyword with a caveat on the same line: **PROCEED** (...)
+        plain = stripped.replace("**", "").strip()
+        token = plain.split()[0].strip("*:_.,") if plain else ""
+        if token.upper() in ("PROCEED", "PIVOT", "REFINE"):
+            return token.lower()
 
     # Fallback: regex for standalone word boundaries so that
     # "PIVOT is not warranted" does NOT match as a decision.
