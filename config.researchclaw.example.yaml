@@ -62,6 +62,34 @@ llm:
   # primary_model: "deepseek-ai/deepseek-v4-pro"
   # fallback_models:
   #   - "deepseek-ai/deepseek-v4-flash"
+  # --- Tencent Cloud TokenHub example (OpenAI-compatible, one gateway for
+  #     Hy / DeepSeek / GLM / Kimi / MiniMax / MiMo / Step) ---
+  #   provider: "tokenhub"       # 广州（中国大陆）站
+  #   provider: "tokenhub-intl"  # 新加坡站
+  #   provider: "tokenhub-us"    # 硅谷站
+  # The three sites are independent: an API key issued for one site is
+  # rejected (401002) by the others, so keep provider + key in sync.
+  #   tokenhub      -> https://tokenhub.tencentcloudmaas.com/v1
+  #   tokenhub-intl -> https://tokenhub-intl.tencentcloudmaas.com/v1
+  #   tokenhub-us   -> https://tokenhub-us.tencentcloudmaas.tech/v1
+  # base_url may be left empty (the provider preset fills it in); set it only
+  # to point at a proxy. The models below must ALSO be activated in the
+  # TokenHub console, otherwise the API answers HTTP 402.
+  #   provider: "tokenhub-intl"
+  #   base_url: ""
+  #   api_key_env: "TOKENHUB_INTL_API_KEY"
+  #   primary_model: "deepseek-v4.1-flash"
+  #   fallback_models:
+  #     - "deepseek-v4-flash"
+  #     - "hy4"
+  #     - "glm-5.3"
+  #     - "kimi-k3"
+  # Other TokenHub model ids: hy4-preview, hy3, hy-mt2-plus,
+  # deepseek-v4-pro, glm-5.3-flash, kimi-k3.1-pro, minimax-m3,
+  # mimo-v2.6-pro, step-5-preview. Query GET /v1/models for the live list.
+  # env var names when using the CLI wizard: TOKENHUB_API_KEY (广州站),
+  # TOKENHUB_INTL_API_KEY (新加坡站), TOKENHUB_US_API_KEY (硅谷站). Any name
+  # works — llm.api_key_env is read verbatim.
   # --- Ollama (local) example ---
   # provider: "ollama"
   # base_url: "http://localhost:11434/v1"
