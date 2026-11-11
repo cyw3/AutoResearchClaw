@@ -329,6 +329,8 @@ class DockerSandboxConfig:
     shm_size_mb: int = 2048
     container_python: str = "/usr/bin/python3"
     keep_containers: bool = False
+    # host:container[:ro|rw] bind mounts, in addition to the workspace.
+    extra_mounts: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -1410,6 +1412,14 @@ def _parse_experiment_config(data: dict[str, Any]) -> ExperimentConfig:
             shm_size_mb=_safe_int(docker_data.get("shm_size_mb"), 2048),
             container_python=docker_data.get("container_python", "/usr/bin/python3"),
             keep_containers=bool(docker_data.get("keep_containers", False)),
+            extra_mounts=tuple(
+                str(item)
+                for item in (
+                    [docker_data.get("extra_mounts")]
+                    if isinstance(docker_data.get("extra_mounts"), str)
+                    else (docker_data.get("extra_mounts") or ())
+                )
+            ),
         ),
         ssh_remote=SshRemoteConfig(
             host=ssh_data.get("host", ""),

@@ -389,6 +389,8 @@ class DockerSandbox:
             f"--memory={cfg.memory_limit_mb}m",
             f"--shm-size={cfg.shm_size_mb}m",
         ]
+        for mount in cfg.extra_mounts:
+            cmd.extend(["-v", mount])
 
         # --- Network policy ---
         # On POSIX, run the container as the host user so that files
