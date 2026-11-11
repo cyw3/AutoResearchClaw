@@ -519,6 +519,14 @@ class LLMClient:
                     or _model_lower.startswith("ernie")
                     or _model_lower.startswith("spark")
                     or _model_lower.startswith("gemma")
+                    # TokenHub (Tencent Cloud) model ids: hy4 / hy3 / hy-mt2-plus,
+                    # deepseek/deepseek-flash, glm-5.3, kimi-k3, minimax-m3,
+                    # mimo-v2.6-pro, step-5-preview.
+                    or _model_lower.startswith("hy")
+                    or _model_lower.startswith("kimi")
+                    or _model_lower.startswith("mimo")
+                    or _model_lower.startswith("step-")
+                    or "/deepseek" in _model_lower
                     or self._normalize_wire_api(self.config.wire_api) == "responses"
                 )
                 if _no_response_format:

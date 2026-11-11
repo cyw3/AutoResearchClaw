@@ -780,6 +780,9 @@ _PROVIDER_CHOICES = {
     "8": ("minimax-anthropic", "MINIMAX_API_KEY"),
     "9": ("minimax-anthropic-cn", "MINIMAX_API_KEY"),
     "10": ("atlascloud", "ATLASCLOUD_API_KEY"),
+    "11": ("tokenhub", "TOKENHUB_API_KEY"),
+    "12": ("tokenhub-intl", "TOKENHUB_INTL_API_KEY"),
+    "13": ("tokenhub-us", "TOKENHUB_US_API_KEY"),
 }
 
 _PROVIDER_URLS = {
@@ -792,11 +795,23 @@ _PROVIDER_URLS = {
     "minimax-anthropic-cn": "https://api.minimaxi.com/anthropic",
     "ollama": "http://localhost:11434/v1",
     "atlascloud": "https://api.atlascloud.ai/v1",
+    # Tencent Cloud TokenHub — three independent regional sites. The API key
+    # must be issued by the same site, otherwise the API returns 401002.
+    "tokenhub": "https://tokenhub.tencentcloudmaas.com/v1",  # 广州
+    "tokenhub-intl": "https://tokenhub-intl.tencentcloudmaas.com/v1",  # 新加坡
+    "tokenhub-us": "https://tokenhub-us.tencentcloudmaas.tech/v1",  # 硅谷
 }
 
 _MINIMAX_MODELS = (
     "MiniMax-M3",
     ["MiniMax-M2.7"],
+)
+
+# TokenHub model ids (see GET /v1/models for the live catalogue; a model must
+# also be activated in the TokenHub console or the API returns 402).
+_TOKENHUB_MODELS = (
+    "deepseek-v4.1-flash",
+    ["deepseek-v4-flash", "hy4", "glm-5.3", "kimi-k3"],
 )
 
 _PROVIDER_MODELS = {
@@ -805,7 +820,7 @@ _PROVIDER_MODELS = {
         "anthropic/claude-3.5-sonnet",
         ["google/gemini-pro-1.5", "meta-llama/llama-3.1-70b-instruct"],
     ),
-    "deepseek": ("deepseek-chat", ["deepseek-reasoner"]),
+    "deepseek": ("deepseek-v4.1-flash", []),
     "minimax": _MINIMAX_MODELS,
     "minimax-global": _MINIMAX_MODELS,
     "minimax-anthropic": _MINIMAX_MODELS,
@@ -815,6 +830,9 @@ _PROVIDER_MODELS = {
         "deepseek-ai/deepseek-v4-pro",
         ["deepseek-ai/deepseek-v4-flash"],
     ),
+    "tokenhub": _TOKENHUB_MODELS,
+    "tokenhub-intl": _TOKENHUB_MODELS,
+    "tokenhub-us": _TOKENHUB_MODELS,
 }
 
 
@@ -856,6 +874,9 @@ def cmd_init(args: argparse.Namespace) -> int:
         print("  8) minimax-global-anthropic (requires MINIMAX_API_KEY)")
         print("  9) minimax-cn-anthropic     (requires MINIMAX_API_KEY)")
         print(" 10) atlascloud   (requires ATLASCLOUD_API_KEY)")
+        print(" 11) tokenhub     (腾讯云 TokenHub 广州站, requires TOKENHUB_API_KEY)")
+        print(" 12) tokenhub-intl (TokenHub 新加坡站, requires TOKENHUB_INTL_API_KEY)")
+        print(" 13) tokenhub-us  (TokenHub 硅谷站, requires TOKENHUB_US_API_KEY)")
         try:
             raw = input("Choice [1]: ").strip()
         except (EOFError, KeyboardInterrupt):
@@ -930,6 +951,21 @@ def cmd_init(args: argparse.Namespace) -> int:
         print('  1. Install the adapter: pip install "researchclaw[anthropic]"')
         print("  2. Export your API key: export MINIMAX_API_KEY=...")
         print("  3. Edit config.arc.yaml to customize your settings")
+        print("  4. Run: researchclaw doctor")
+    elif provider.startswith("tokenhub"):
+        print("\nNext steps:")
+        print(f"  1. Export your API key: export {api_key_env}=...")
+        print(
+            "     (the key must be issued by this exact TokenHub site — "
+            "Guangzhou / Singapore / Silicon Valley keys are NOT interchangeable)"
+        )
+        print(
+            "  2. Activate the models you need in the TokenHub console, "
+            "else the API returns HTTP 402"
+        )
+        print(
+            f"  3. Verify llm.primary_model against {_PROVIDER_URLS[provider]}/models"
+        )
         print("  4. Run: researchclaw doctor")
     else:
         env_var = api_key_env or "OPENAI_API_KEY"

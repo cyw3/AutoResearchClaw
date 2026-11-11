@@ -23,6 +23,19 @@ PROVIDER_PRESETS = {
     "atlascloud": {
         "base_url": "https://api.atlascloud.ai/v1",
     },
+    # Tencent Cloud TokenHub — one OpenAI-compatible gateway for Hy / DeepSeek /
+    # GLM / Kimi / MiniMax / MiMo / Step. The three regional sites are fully
+    # independent: an API key issued for one site is rejected (401002) on the
+    # others, so the region must match the key.
+    "tokenhub": {
+        "base_url": "https://tokenhub.tencentcloudmaas.com/v1",  # 广州（中国大陆）
+    },
+    "tokenhub-intl": {
+        "base_url": "https://tokenhub-intl.tencentcloudmaas.com/v1",  # 新加坡
+    },
+    "tokenhub-us": {
+        "base_url": "https://tokenhub-us.tencentcloudmaas.tech/v1",  # 硅谷
+    },
     "anthropic": {
         "base_url": "https://api.anthropic.com",
         "adapter": "anthropic",
@@ -67,6 +80,9 @@ def create_llm_client(config: RCConfig) -> LLMClient | ACPClient:
     - ``"openai"`` → :class:`LLMClient` with OpenAI base URL
     - ``"deepseek"`` → :class:`LLMClient` with DeepSeek base URL
     - ``"atlascloud"`` → :class:`LLMClient` with Atlas Cloud base URL
+    - ``"tokenhub"`` / ``"tokenhub-intl"`` / ``"tokenhub-us"`` → :class:`LLMClient`
+      with the Tencent Cloud TokenHub base URL (Guangzhou / Singapore / Silicon
+      Valley; the API key must belong to the same site)
     - ``"novita"`` → :class:`LLMClient` with Novita AI base URL
     - ``"minimax"`` → :class:`LLMClient` with MiniMax base URL
     - ``"openai-compatible"`` (default) → :class:`LLMClient` with custom base_url
