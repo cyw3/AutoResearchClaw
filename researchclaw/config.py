@@ -631,6 +631,10 @@ class ExperimentConfig:
     metric_key: str = "primary_metric"
     metric_direction: str = "minimize"
     keep_threshold: float = 0.0
+    # M6/R2: when True, a lineage failure (unverified table number or an
+    # artifact rewritten since the ledger was written) vetoes the paper at
+    # stage 22. Default False = shadow audit only.
+    lineage_enforce: bool = False
     sandbox: SandboxConfig = field(default_factory=SandboxConfig)
     docker: DockerSandboxConfig = field(default_factory=DockerSandboxConfig)
     agentic: AgenticConfig = field(default_factory=AgenticConfig)
@@ -1439,6 +1443,7 @@ def _parse_experiment_config(data: dict[str, Any]) -> ExperimentConfig:
         metric_key=data.get("metric_key", "primary_metric"),
         metric_direction=data.get("metric_direction", "minimize"),
         keep_threshold=_safe_float(data.get("keep_threshold"), 0.0),
+        lineage_enforce=bool(data.get("lineage_enforce", False)),
         sandbox=SandboxConfig(
             python_path=sandbox_data.get("python_path", DEFAULT_PYTHON_PATH),
             gpu_required=bool(sandbox_data.get("gpu_required", False)),

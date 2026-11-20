@@ -2184,8 +2184,67 @@ def _execute_export_publish(
                 metric_direction=config.experiment.metric_direction,
                 best_only=True,
             )
+            # M6/R2: audit the persisted number→artifact ledger. Shadow by
+            # default; `experiment.lineage_enforce` upgrades a lineage failure
+            # to a veto (which the REJECT sanitiser below then acts on).
+            _lineage22 = None
+            _lineage_stale: list[str] = []
+            _lineage_missing = True
+            try:
+                from researchclaw.lineage import LINEAGE_FILENAME, LineageLedger
+
+                _lineage_path = run_dir / LINEAGE_FILENAME
+                _lineage_missing = not _lineage_path.is_file()
+                if not _lineage_missing:
+                    _lineage22 = LineageLedger.load(_lineage_path)
+                    _lineage_stale = _lineage22.check_hashes(run_dir)
+                    if _lineage_stale:
+                        logger.warning(
+                            "Stage 22: %d lineage artifact(s) changed since the "
+                            "ledger was written (REFINE rewrite?) — e.g. %s",
+                            len(_lineage_stale),
+                            _lineage_stale[0],
+                        )
+                elif not _abl_skip_registry:
+                    logger.warning(
+                        "Stage 22: no lineage.jsonl in %s — provenance audit "
+                        "unavailable (number whitelist still enforced)",
+                        run_dir.name,
+                    )
+            except Exception as _lin_exc:  # noqa: BLE001 - audit must never break export
+                logger.debug("Stage 22: lineage audit skipped: %s", _lin_exc)
+
             if _vr22.values:
                 _vresult = _verify_paper(tex_content, _vr22)
+                _lineage_payload: dict | None = None
+                if _lineage22 is not None and len(_lineage22):
+                    try:
+                        _lineage_verdict = _lineage22.verify(tex_content)
+                        _lineage_payload = {
+                            **_lineage22.stats(),
+                            "stale_artifacts": _lineage_stale[:20],
+                            "severity": _lineage_verdict.severity,
+                            "strict_violations": _lineage_verdict.strict_violations,
+                            "lenient_violations": _lineage_verdict.lenient_violations,
+                            "checked": _lineage_verdict.total_numbers_checked,
+                            "verified": _lineage_verdict.total_numbers_verified,
+                        }
+                        if getattr(config.experiment, "lineage_enforce", False) and (
+                            _lineage_verdict.strict_violations or _lineage_stale
+                        ):
+                            logger.error(
+                                "Stage 22: lineage veto — %d strict violation(s), "
+                                "%d stale artifact(s); downgrading paper verdict to REJECT",
+                                _lineage_verdict.strict_violations,
+                                len(_lineage_stale),
+                            )
+                            _vresult.severity = "REJECT"
+                            _vresult.passed = False
+                    except Exception as _lin_verify_exc:  # noqa: BLE001
+                        logger.debug(
+                            "Stage 22: lineage verification skipped: %s",
+                            _lin_verify_exc,
+                        )
                 (stage_dir / "paper_verification.json").write_text(
                     json.dumps({
                         "passed": _vresult.passed,
@@ -2205,6 +2264,8 @@ def _execute_export_publish(
                             for fc in _vresult.fabricated_conditions
                         ],
                         "config_warnings": getattr(_vresult, "config_warnings", []),
+                        "lineage_missing": _lineage_missing,
+                        "lineage": _lineage_payload,
                         "summary": _vresult.summary,
                     }, indent=2),
                     encoding="utf-8",

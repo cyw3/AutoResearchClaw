@@ -1418,6 +1418,21 @@ def _execute_paper_draft(
                     len(_verified_registry.values),
                     len(_verified_registry.condition_names),
                 )
+                # M6/R2: persist the number→artifact ledger so the export stage
+                # can audit provenance instead of trusting generated prose.
+                try:
+                    from researchclaw.lineage import LineageLedger
+
+                    _lineage = LineageLedger.from_run_dir(run_dir, run_id=run_dir.name)
+                    if _lineage.entries:
+                        _lineage.write(run_dir / "lineage.jsonl")
+                        logger.info(
+                            "Stage 17: lineage ledger — %d entries, %d artifacts",
+                            len(_lineage),
+                            _lineage.stats()["artifacts"],
+                        )
+                except Exception as _lin_exc:  # noqa: BLE001 - never block writing
+                    logger.warning("Stage 17: lineage ledger failed: %s", _lin_exc)
             except Exception as _vr_exc:
                 logger.warning("Stage 17: Failed to build VerifiedRegistry: %s", _vr_exc)
         if isinstance(exp_summary, dict) and exp_summary.get("metrics_summary"):
