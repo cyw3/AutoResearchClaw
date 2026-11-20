@@ -122,7 +122,10 @@ class JobLedger:
         return {
             "unit_id": unit.unit_id,
             "kind": unit.kind,
-            "status": RUNNING,
+            # A materialised state file means "known", not "started": the unit
+            # becomes RUNNING in begin().  Defaulting to RUNNING made every
+            # never-started unit look in-flight and inflated status_counts.
+            "status": PENDING,
             "idempotency_key": unit.idempotency_key,
             "meta": unit.meta,
             "created_at": _now_iso(),
@@ -174,6 +177,8 @@ class JobLedger:
             }
         )
         entry["attempts"] = int(entry.get("attempts", 0)) + 1
+        # Starting any step means the unit itself is in flight.
+        state["status"] = RUNNING
         self.save(unit, state)
 
     def complete(
