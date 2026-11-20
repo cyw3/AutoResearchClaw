@@ -697,6 +697,138 @@ def _write_jsonl(path: Path, rows: list[dict[str, Any]]) -> None:
             handle.write(json.dumps(row, ensure_ascii=False) + "\n")
 
 
+_METRIC_WRAPPER_KEYS: tuple[str, ...] = ("mean", "value", "avg")
+
+# Metrics that are bookkeeping/auxiliary rather than the headline result. They
+# are legitimately identical across conditions (e.g. success_rate == 1.0), so
+# the auto-detected metric fallback must never key zero-variance on them.
+_METRIC_AUX_SUFFIXES: tuple[str, ...] = (
+    "_std",
+    "_min",
+    "_max",
+    "_count",
+    "_se",
+    "_ci_low",
+    "_ci_high",
+)
+_METRIC_AUX_NAMES: frozenset[str] = frozenset(
+    {
+        "success_rate",
+        "wall_time",
+        "runtime",
+        "elapsed_time",
+        "duration",
+        "n_seeds",
+        "num_seeds",
+        "seed",
+        "figures_produced",
+        "figure_count",
+    }
+)
+
+
+def _coerce_metric_float(value: Any) -> float | None:
+    """Coerce a metric entry to ``float``, unwrapping ``{"mean": ...}`` shapes.
+
+    Returns ``None`` for booleans (``bool`` is an ``int`` subclass), for
+    strings, and for containers without a numeric scalar.
+    """
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, (int, float)):
+        return float(value)
+    if isinstance(value, dict):
+        for _key in _METRIC_WRAPPER_KEYS:
+            if _key in value:
+                _inner = _coerce_metric_float(value[_key])
+                if _inner is not None:
+                    return _inner
+    return None
+
+
+def _condition_metric_map(cond_summary: Any) -> dict[str, Any]:
+    """Return the ``{metric_name: value}`` mapping of one condition summary.
+
+    Handles both the canonical ``{"metrics": {...}}`` shape written by stage-14
+    and the legacy flat ``{"primary_metric": ...}`` shape.
+    """
+    if not isinstance(cond_summary, dict):
+        return {}
+    _raw = cond_summary.get("metrics")
+    metrics: dict[str, Any] = dict(_raw) if isinstance(_raw, dict) else {}
+    for _legacy in ("primary_metric", "primary_metric_mean"):
+        if _legacy not in metrics and _legacy in cond_summary:
+            metrics[_legacy] = cond_summary[_legacy]
+    return metrics
+
+
+def _resolve_condition_metric_values(
+    summaries: dict[str, Any],
+    metric_key: str = "primary_metric",
+) -> tuple[str | None, dict[str, float]]:
+    """Pick one metric present in EVERY condition and read its value.
+
+    Condition summaries collect one entry per metric in whatever order the
+    source (``best_run`` / ``metrics_summary`` / ``structured_results``)
+    provided.  Comparing the first value of each condition therefore risks
+    pairing different metrics (e.g. condition A's ``loss`` against condition
+    B's ``accuracy``), which yields both false positives and false negatives.
+
+    Preference order for the metric name:
+    1. ``metric_key`` (exact, then ``<key>_mean``)
+    2. the ``primary_metric`` family
+    3. the alphabetically-first name shared by all conditions, ignoring
+       dispersion/range suffixes and auxiliary bookkeeping metrics
+       (``success_rate``, ``wall_time``, ...) — those are legitimately
+       identical across conditions and would key false positives
+
+    Returns ``(metric_name, {condition: value})``.  ``metric_name`` is ``None``
+    (with an empty mapping) when no single metric is available for all
+    conditions — callers must skip cross-condition comparisons rather than
+    guess.
+    """
+    if not isinstance(summaries, dict) or len(summaries) < 2:
+        return None, {}
+
+    per_condition = {
+        str(_cond): _condition_metric_map(_cs) for _cond, _cs in summaries.items()
+    }
+    _name_sets = [set(_m) for _m in per_condition.values()]
+    common: set[str] = set.intersection(*_name_sets)
+    if not common:
+        return None, {}
+
+    preferred: list[str] = []
+    for _base in (metric_key, "primary_metric"):
+        if not _base:
+            continue
+        for _name in (_base, f"{_base}_mean"):
+            if _name not in preferred:
+                preferred.append(_name)
+
+    name = next((_n for _n in preferred if _n in common), None)
+    if name is None:
+        _clean = [
+            _n
+            for _n in sorted(common)
+            if _n not in _METRIC_AUX_NAMES
+            and not _n.endswith(_METRIC_AUX_SUFFIXES)
+        ]
+        if not _clean:
+            # Only auxiliary metrics are shared — declining to compare beats
+            # reporting identical ``success_rate``/``wall_time`` as broken wiring.
+            return None, {}
+        name = _clean[0]
+
+    values: dict[str, float] = {}
+    for _cond, _metrics in per_condition.items():
+        _val = _coerce_metric_float(_metrics.get(name))
+        if _val is None:
+            return None, {}
+        values[_cond] = _val
+    return name, values
+
+
 def _parse_metrics_from_stdout(stdout: str) -> dict[str, Any]:
     """Parse metric lines from experiment stdout.
 

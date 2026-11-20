@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import logging
+import math
 import re
 from pathlib import Path
 from typing import Any
@@ -21,6 +22,7 @@ from researchclaw.pipeline._helpers import (
     _get_evolution_overlay,
     _multi_perspective_generate,
     _read_prior_artifact,
+    _resolve_condition_metric_values,
     _safe_json_loads,
     _synthesize_perspectives,
     _utcnow_iso,
@@ -276,14 +278,46 @@ def _execute_result_analysis(
         # Last resort: build from structured_results condition keys
         _sr = exp_data.get("structured_results", {})
         if isinstance(_sr, dict):
+            # Keys of a single-run results.json are NOT conditions. Without this
+            # blocklist the "metrics" dict (metric→value) was itself promoted to
+            # a condition named "metrics", fabricating a fake arm that shifted
+            # every downstream comparison (condition count, paired tests,
+            # zero-variance detection).
+            _non_condition_keys = {
+                "metadata",
+                "config",
+                "metrics",
+                "primary_metric",
+                "metric_key",
+                "source",
+                "units",
+                "status_counts",
+                "failed_units",
+                "ledger_root",
+                "ledger_metrics",
+                "run_id",
+                "task_id",
+                "status",
+                "elapsed_sec",
+                "stdout",
+                "stderr",
+                "timed_out",
+                "completed_at",
+                "command",
+            }
             for _sk, _sv in _sr.items():
-                if isinstance(_sv, dict) and _sk not in ("metadata", "config"):
-                    _condition_summaries[_sk] = {"metrics": {}}
-                    for _smk, _smv in _sv.items():
-                        try:
-                            _condition_summaries[_sk]["metrics"][_smk] = float(_smv)
-                        except (ValueError, TypeError):
-                            pass
+                if _sk in _non_condition_keys or not isinstance(_sv, dict):
+                    continue
+                _cond_metrics: dict[str, float] = {}
+                for _smk, _smv in _sv.items():
+                    try:
+                        _cond_metrics[_smk] = float(_smv)
+                    except (ValueError, TypeError):
+                        pass
+                # Do not materialise empty shells: a condition with no numeric
+                # metric would still count toward len(_condition_summaries).
+                if _cond_metrics:
+                    _condition_summaries[_sk] = {"metrics": _cond_metrics}
 
     # P0-D rescue: if all three parse paths above still produced no
     # conditions (T10/T24 symptom on ARC-Bench), synthesize a single
@@ -402,7 +436,6 @@ def _execute_result_analysis(
                     _t = (_mean_d / (_std_d / (_n ** 0.5))) if _std_d > 0 else 0.0
                     _df = _n - 1
                     # Two-tailed p-value using t-distribution
-                    import math
                     try:
                         from scipy.stats import t as _t_dist
                         _p = float(2 * _t_dist.sf(abs(_t), _df))
@@ -512,28 +545,35 @@ def _execute_result_analysis(
     }
     if _seed_insufficiency_warnings:
         summary_payload["seed_insufficiency_warnings"] = _seed_insufficiency_warnings
-    # R13-1: Detect zero-variance across conditions (all conditions identical primary metric)
-    if _condition_summaries and len(_condition_summaries) >= 2:
-        _primary_vals = []
-        for _cs in _condition_summaries.values():
-            if isinstance(_cs, dict):
-                # Try 'metrics' dict first (actual structure), then 'primary_metric' fallback
-                _metrics = _cs.get("metrics", {})
-                if isinstance(_metrics, dict) and _metrics:
-                    _pv_candidate = next(iter(_metrics.values()), None)
-                    if isinstance(_pv_candidate, dict):
-                        _pv_candidate = _pv_candidate.get("mean")
-                    if isinstance(_pv_candidate, (int, float)):
-                        _primary_vals.append(_pv_candidate)
-                        continue
-                _pm = _cs.get("primary_metric", {})
-                _pv = _pm.get("mean") if isinstance(_pm, dict) else _pm
-                if isinstance(_pv, (int, float)):
-                    _primary_vals.append(_pv)
-        if len(_primary_vals) >= 2 and len(set(_primary_vals)) == 1:
+    # R13-1: Detect zero-variance across conditions (all conditions identical
+    # primary metric). The metric is resolved BY NAME: each condition's
+    # "metrics" dict is filled in whatever order its source (best_run /
+    # metrics_summary / structured_results) provided, so comparing the first
+    # value of each condition can pair different metrics (condition A's
+    # "loss" vs condition B's "accuracy") and yield false positives *and*
+    # false negatives. A value must also exist for every condition — a
+    # partial match is not evidence of identical wiring.
+    _pv_metric, _pv_by_cond = _resolve_condition_metric_values(
+        _condition_summaries,
+        metric_key=config.experiment.metric_key or "primary_metric",
+    )
+    _primary_vals = list(_pv_by_cond.values())
+    if (
+        _pv_metric is not None
+        and len(_primary_vals) == len(_condition_summaries)
+        and len(_primary_vals) >= 2
+    ):
+        _pv_ref = _primary_vals[0]
+        # Tolerance-based comparison: bit-exact `set()` equality would report
+        # values differing only by float rounding (or JSON re-serialisation)
+        # as distinct, silently disabling this check.
+        if all(
+            math.isclose(_pv, _pv_ref, rel_tol=1e-9, abs_tol=1e-12)
+            for _pv in _primary_vals[1:]
+        ):
             _zv_warn = (
                 f"ZERO VARIANCE: All {len(_primary_vals)} conditions have "
-                f"identical primary_metric ({_primary_vals[0]}). "
+                f"identical {_pv_metric} ({_pv_ref}). "
                 f"Experiment condition wiring is likely broken."
             )
             _ablation_warnings.append(_zv_warn)

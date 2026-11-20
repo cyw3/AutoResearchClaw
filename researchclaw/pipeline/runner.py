@@ -15,6 +15,7 @@ from researchclaw.adapters import AdapterBundle
 from researchclaw.config import RCConfig
 from researchclaw.evolution import EvolutionStore, extract_lessons
 from researchclaw.knowledge.base import write_stage_to_kb
+from researchclaw.pipeline._helpers import _resolve_condition_metric_values
 from researchclaw.pipeline.executor import StageResult, execute_stage
 from researchclaw.pipeline.stages import (
     DECISION_ROLLBACK,
@@ -1527,22 +1528,26 @@ def _check_experiment_quality(
         "condition_summaries", data.get("condition_metrics", {})
     )
     if isinstance(conditions, dict) and len(conditions) >= 2:
-        primary_values: list[float] = []
-        for cond_name, cond_data in conditions.items():
-            if isinstance(cond_data, dict):
-                # BUG-212: Primary metric lives inside cond_data["metrics"]
-                _metrics = cond_data.get("metrics", cond_data)
-                pm = _metrics.get(
-                    "primary_metric",
-                    _metrics.get("primary_metric_mean"),
+        # BUG-212/R13-1: resolve one metric BY NAME across all conditions
+        # instead of assuming "primary_metric" is hardcoded and comparing the
+        # first entry of each condition (which may be a different metric).
+        _pv_metric, _pv_by_cond = _resolve_condition_metric_values(conditions)
+        primary_values = list(_pv_by_cond.values())
+        if (
+            _pv_metric is not None
+            and len(primary_values) == len(conditions)
+            and len(primary_values) >= 2
+        ):
+            _pv_ref = primary_values[0]
+            if all(
+                math.isclose(v, _pv_ref, rel_tol=1e-9, abs_tol=1e-12)
+                for v in primary_values[1:]
+            ):
+                return False, (
+                    f"All {len(primary_values)} conditions have identical "
+                    f"{_pv_metric} ({_pv_ref}) — condition implementations are "
+                    f"likely broken"
                 )
-                if isinstance(pm, (int, float)):
-                    primary_values.append(float(pm))
-        if len(primary_values) >= 2 and len(set(primary_values)) == 1:
-            return False, (
-                f"All {len(primary_values)} conditions have identical primary_metric "
-                f"({primary_values[0]}) — condition implementations are likely broken"
-            )
 
     # Check 3: Too many ablation warnings
     if isinstance(ablation_warnings, list) and len(ablation_warnings) >= 3:
